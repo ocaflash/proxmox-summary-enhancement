@@ -64,6 +64,24 @@ for h in pve66 pve77; do
 done
 ```
 
+If some nodes cannot be reached over ssh, the script names the ssh error for
+each one and stops **before** changing anything:
+
+```
+== pre-flight ==
+pve107           UNREACHABLE  (root@pve107: Permission denied (publickey,password).)
+pve17            UNREACHABLE  (ssh: Could not resolve hostname pve17: Name or service not known)
+pve66            pve-manager/9.2.20/... (running kernel: 6.14.8-2-pve)
+pve88            local (pve-manager/9.2.10/...)
+```
+
+Root ssh in a cluster comes from `/etc/pve/priv/authorized_keys`; on each node
+`/root/.ssh/authorized_keys` should be a symlink to it. If it is not, the node
+cannot be reached from other members (repair with `pvecm updatecerts`, or
+`ssh-copy-id root@<node>` for standalone servers). For a quick partial rollout
+add `--partial`: reachable nodes are patched and the rest are listed at the end
+with exit code 6.
+
 After the rollout the script prints one line per node:
 
 ```

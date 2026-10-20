@@ -31,6 +31,7 @@ PASS_ARGS=()
 CHECK_ONLY=0
 ASSUME_YES=0
 VERIFY=1
+PARTIAL=0
 NODE_LIST=""
 
 while [[ $# -gt 0 ]]; do
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
         --check-only) CHECK_ONLY=1; PASS_ARGS+=("--check-only") ;;
         --force) PASS_ARGS+=("--force") ;;
         --no-verify) VERIFY=0 ;;
+        --partial|--continue-on-error) PARTIAL=1 ;;
         --yes|-y) ASSUME_YES=1 ;;
         --retention)
             [[ $# -lt 2 ]] && { echo "--retention requires a value" >&2; exit 2; }
@@ -68,6 +70,8 @@ automatically, standalone servers are listed with --nodes.
   --nodes "a b c"    explicit node list instead of cluster detection
   --yes, -y          do not ask for confirmation
   --no-verify        skip the post-install pvesh check
+  --partial          patch the reachable nodes even if some are unreachable
+                     (default: abort before changing anything)
 
 Uninstall everywhere: ./install-cluster.sh --nodes ... (then run
 pve-mac-monitor-uninstall on each node), or loop manually:
@@ -111,6 +115,25 @@ node_is_local() {
 
 # Standalone PVE also ships pvecm, but 'pvecm status' then prints an error.
 # A cluster only exists when corosync.conf is present.
+ssh_error_set() {
+    SSH_ERROR_NODES="${SSH_ERROR_NODES} $1"
+    SSH_ERROR_TEXT="${SSH_ERROR_TEXT}$2"$'\n'
+}
+
+ssh_error_get() {
+    local want="$1" i=0
+    for n in $SSH_ERROR_NODES; do
+        if [[ "$n" == "$want" ]]; then
+            sed -n "$((i + 1))p" <<<"$SSH_ERROR_TEXT"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
+ssh_error_has() { [[ " $SSH_ERROR_NODES " == *" $1 "* ]]; }
+
 cluster_present() {
     [[ -f /etc/pve/corosync.conf ]] && return 0
     pvecm status 2>/dev/null | grep -q '^Cluster information' && return 0
@@ -186,25 +209,60 @@ fi
 # ---------- pre-flight: nothing is patched unless every node is reachable ----
 echo "== pre-flight =="
 UNREACHABLE=()
+SSH_ERROR_NODES=""
+SSH_ERROR_TEXT=""
 for node in $NODES; do
     if node_is_local "$node"; then
         printf '%-16s local (%s)\n' "$node" "$(pveversion 2>/dev/null | head -n1)"
         continue
     fi
-    remote_ver="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-                    "root@${node}" "pveversion 2>/dev/null | head -n1" 2>/dev/null || true)"
-    if [[ -z "$remote_ver" ]]; then
-        printf '%-16s UNREACHABLE\n' "$node"
-        UNREACHABLE+=("$node")
+    ssh_err=""
+    if remote_ver="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+                        "root@${node}" "pveversion 2>/dev/null | head -n1" 2>&1)" \
+       && [[ -n "$remote_ver" ]]; then
+        printf '%-16s %s\n' "$node" "$(head -n1 <<<"$remote_ver")"
     else
-        printf '%-16s %s\n' "$node" "$remote_ver"
+        # Keep the real reason: "Permission denied (publickey)", "Could not
+        # resolve hostname", "Connection refused", "Host key verification
+        # failed", a login banner, ...
+        ssh_err="$(grep -v '^Warning: Permanently added' <<<"$remote_ver" | grep -v '^\s*$' | tail -n1)"
+        [[ -z "$ssh_err" ]] && ssh_err="ssh exited non-zero with no output"
+        printf '%-16s UNREACHABLE  (%s)\n' "$node" "$ssh_err"
+        UNREACHABLE+=("$node")
+        ssh_error_set "$node" "$ssh_err"
     fi
 done
+
 if ((${#UNREACHABLE[@]})); then
     echo >&2
-    echo "ABORT: unreachable over ssh: ${UNREACHABLE[*]}" >&2
-    echo "       Nothing was changed. Fix root ssh access (or pass --nodes) and retry." >&2
-    exit 3
+    if [[ "$PARTIAL" -eq 0 ]]; then
+        echo "ABORT: unreachable over ssh: ${UNREACHABLE[*]}" >&2
+        echo "       Nothing was changed." >&2
+        echo >&2
+        echo "Fixes, in order of likelihood:" >&2
+        echo "  1. root ssh keys are per cluster: on this node check" >&2
+        echo "       ls -l /root/.ssh/authorized_keys   # should link to /etc/pve/priv/authorized_keys" >&2
+        echo "       ssh -v root@${UNREACHABLE[0]}      # shows which auth method fails" >&2
+        echo "  2. name resolution: the node names must resolve from here (/etc/hosts)" >&2
+        echo "       getent hosts ${UNREACHABLE[0]}" >&2
+        echo "  3. if the nodes are NOT in one cluster, ssh is not preconfigured:" >&2
+        echo "       ssh-copy-id root@${UNREACHABLE[0]}   # from this node" >&2
+        echo >&2
+        echo "Workarounds:" >&2
+        echo "  - patch the reachable nodes only:  ... --partial" >&2
+        echo "  - or run the installer on each server's own shell (Node -> Shell):" >&2
+        echo "      curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install.sh | bash" >&2
+        exit 3
+    fi
+    echo "WARN: --partial, skipping unreachable nodes: ${UNREACHABLE[*]}" >&2
+    REACHABLE=""
+    for node in $NODES; do
+        if ! ssh_error_has "$node" || node_is_local "$node"; then
+            REACHABLE="${REACHABLE} ${node}"
+        fi
+    done
+    NODES="${REACHABLE# }"
+    echo "       proceeding with: ${NODES}" >&2
 fi
 
 # A degraded cluster is not a reason to refuse, but restarting services on a
@@ -278,10 +336,28 @@ if cluster_present; then
     echo
 fi
 
+if ((${#UNREACHABLE[@]})); then
+    echo "NOT PATCHED (unreachable): ${UNREACHABLE[*]}" >&2
+    for node in "${UNREACHABLE[@]}"; do
+        echo "  ${node}: $(ssh_error_get "$node")" >&2
+    done
+    echo "Run the installer on those nodes directly:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install.sh | bash" >&2
+    echo
+fi
+
 if ((${#FAILED[@]})); then
     echo "FAILED nodes: ${FAILED[*]}" >&2
     echo "Each node is idempotent and rolls back on its own; re-run this script" >&2
     echo "to retry, or restore with: ssh root@<node> pve-mac-monitor-uninstall --from-backup" >&2
     exit 5
 fi
+if ((${#UNREACHABLE[@]})); then
+    attempted=0
+    for node in $NODES; do attempted=$((attempted + 1)); done
+    echo "patched: ${attempted} node(s), skipped: ${#UNREACHABLE[@]}" >&2
+    echo "Re-run this script after fixing ssh to finish the rollout." >&2
+    exit 6
+fi
+
 echo "all nodes done"
