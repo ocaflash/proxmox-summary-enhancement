@@ -71,9 +71,9 @@ automatically, standalone servers are listed with --nodes.
   --yes, -y          do not ask for confirmation (needed when run without a
                      terminal: cron, CI, or 'curl | bash' with stdin closed)
 
-Interactive confirmation reads the controlling terminal (/dev/tty), not
-stdin, because 'curl | bash' occupies stdin with the script itself. It waits
-MAC_CONFIRM_TIMEOUT seconds (default 60) and accepts only the word 'yes'.
+Without --yes the script asks for the word 'yes'. The question is read from
+stdin only, so it works when run from a checkout in a terminal; 'curl | bash'
+occupies stdin with the script itself, so there --yes is required.
   --no-verify        skip the post-install pvesh check
   --partial          patch the reachable nodes even if some are unreachable
                      (default: abort before changing anything)
@@ -114,24 +114,10 @@ node_pvesh() {
     fi
 }
 
-# /dev/tty exists as a device node but cannot always be opened (no controlling
-# terminal, e.g. cron or a detached pipeline). Only a real open attempt counts.
-have_tty() { ( exec 3<>/dev/tty ) 2>/dev/null; }
-
 # Node names end up in a prompt on a terminal. A directory name in
 # /etc/pve/nodes is root-controlled but can still contain escape sequences
 # (OSC 52 clipboard writes, title changes), so print only safe characters.
 sanitize() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._-'; }
-
-# Where the prompt went, so the operator can tell which terminal is answering.
-tty_path() {
-    local t
-    # 'tty' inspects stdin, which is the script stream under 'curl | bash'.
-    # Ask the terminal device itself instead.
-    t="$( (tty < /dev/tty) 2>/dev/null || true)"
-    [[ "$t" == "not a tty" || -z "$t" ]] && t="/dev/tty"
-    printf '%s' "${t#/dev/}"
-}
 
 node_is_local() {
     [[ "$1" == "$LOCAL_NODE" || "$1" == "$LOCAL_HOSTNAME" ]]
@@ -249,43 +235,29 @@ echo "options:    ${PASS_ARGS[*]:-<none>}"
 echo
 
 if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
-    # 'curl ... | bash' leaves stdin occupied by the script stream, so a plain
-    # 'read' cannot be answered. Prompt on the controlling terminal when one
-    # exists; otherwise refuse instead of silently patching.
-    answer=""
-    timeout="${MAC_CONFIRM_TIMEOUT:-60}"
+    # Only stdin is used for confirmation: 'curl | bash' ties stdin to the
+    # script, and /dev/tty is deliberately not used at all (a prompt can land
+    # in a terminal nobody is watching, misfire on stale keystrokes, or stop a
+    # background job with SIGTTIN). Run from a checkout in a real terminal, or
+    # pass --yes.
     node_count="$(echo "$NODES" | wc -l | tr -d ' ')"
     node_list="$(echo "$NODES" | tr '\n' ' ' | sed 's/ *$//')"
 
-    if have_tty; then
-        # Say exactly what will happen and on which terminal, so the answer
-        # cannot be given for a prompt the operator did not see.
-        printf 'pve-mac-monitor: about to patch %s node(s) as %s: %s\n' \
-            "$node_count" "$(id -un)" "$node_list" > /dev/tty 2>/dev/null || true
-        printf 'pve-mac-monitor: this prompt reads %s, not stdin (timeout %ss, default No).\n' \
-            "$(tty_path)" "$timeout" > /dev/tty 2>/dev/null || true
-        printf 'pve-mac-monitor: type yes to continue: ' > /dev/tty 2>/dev/null || true
-        IFS= read -r -t "$timeout" answer < /dev/tty 2>/dev/null || answer=""
-    elif [[ -t 0 ]]; then
-        printf 'pve-mac-monitor: about to patch %s node(s) as %s: %s\n' \
-            "$node_count" "$(id -un)" "$node_list"
-        read -r -t "$timeout" -p "pve-mac-monitor: type yes to continue: " answer || answer=""
-    else
-        echo "ABORT: no terminal to confirm on and --yes not given." >&2
-        echo "       Re-run with --yes:  ... | bash -s -- --nodes \"pve66 pve88\" --retention 168 --yes" >&2
+    if [[ ! -t 0 ]]; then
+        echo "ABORT: confirmation needs an interactive shell, and stdin is not a terminal." >&2
+        echo "       About to patch ${node_count} node(s) as $(id -un): ${node_list}" >&2
+        echo "       Re-run with --yes to confirm:" >&2
+        echo "         curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install-cluster.sh \\" >&2
+        echo "           | bash -s -- --nodes \"${node_list}\" --yes" >&2
         exit 2
     fi
 
+    printf 'pve-mac-monitor: about to patch %s node(s) as %s: %s\n' \
+        "$node_count" "$(id -un)" "$node_list"
+    read -r -p "pve-mac-monitor: type yes to continue: " answer || answer=""
     case "$answer" in
         yes|YES|Yes) ;;
-        "")
-            echo "aborted: no answer within ${timeout}s (nothing was changed)" >&2
-            exit 0
-            ;;
-        *)
-            echo "aborted (nothing was changed)"
-            exit 0
-            ;;
+        *) echo "aborted (nothing was changed)"; exit 0 ;;
     esac
 fi
 

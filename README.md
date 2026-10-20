@@ -82,20 +82,22 @@ cannot be reached from other members (repair with `pvecm updatecerts`, or
 add `--partial`: reachable nodes are patched and the rest are listed at the end
 with exit code 6.
 
-`install-cluster.sh` asks for confirmation before patching. Because
-`curl | bash` uses stdin for the script itself, the prompt is written to the
-controlling terminal (`/dev/tty`) instead: it names the user, the node list and
-the terminal it reads, waits `MAC_CONFIRM_TIMEOUT` seconds (default 60,
-default answer No) and accepts only the full word `yes`. When there is no
-terminal at all (cron, CI, stdin closed) it refuses unless `--yes` (`-y`) is
-given.
+`install-cluster.sh` asks for confirmation before patching. The question is
+read from **stdin only** — there is no `/dev/tty` access, so the prompt can
+never appear in a terminal nobody is watching, consume stale keystrokes from
+another session, or stop a background job with SIGTTIN. It accepts only the
+full word `yes`.
 
-Reading `/dev/tty` is not risk-free: the prompt can land in a session the
-operator is not watching, a background process reading its controlling
-terminal may be stopped by SIGTTIN, and leftover keystrokes in that terminal
-can be consumed as an answer. That is why the prompt names what it does, the
-answer must be typed out, and the timeout defaults to No. For unattended runs
-prefer `--yes` and `--check-only` first.
+Consequence: under `curl | bash` stdin is the script itself, so the script
+refuses to patch and tells you what it would have done and how to confirm:
+
+```
+ABORT: confirmation needs an interactive shell, and stdin is not a terminal.
+       About to patch 2 node(s) as root: pve66 pve88
+       Re-run with --yes to confirm:
+         curl -fsSL .../install-cluster.sh \
+           | bash -s -- --nodes "pve66 pve88" --yes
+```
 
 After the rollout the script prints one line per node:
 
