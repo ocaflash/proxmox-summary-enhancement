@@ -15,11 +15,18 @@
 # --nodes and make sure root ssh to them is possible.
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.0"
+SCRIPT_VERSION="2.6.0"
 # ---- repository source (same contract as install.sh) --------------------
 REPO_PROVIDER="${MAC_PROVIDER:-github}"
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
+# Read-only token for private projects; forwarded to every node over the ssh
+# stream (never as a command line argument, so it stays out of ps/history).
+REPO_TOKEN="${MAC_TOKEN:-}"
+if [[ -n "$REPO_TOKEN" ]] && [[ ! "$REPO_TOKEN" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    echo "MAC_TOKEN contains unexpected characters (letters, digits, . _ : - only)" >&2
+    exit 2
+fi
 case "$REPO_PROVIDER" in
     github) REPO_HOST="${MAC_HOST:-github.com}" ;;
     gitlab) REPO_HOST="${MAC_HOST:-gitlab.com}" ;;
@@ -31,11 +38,50 @@ esac
 
 repo_raw_url() {
     case "$REPO_PROVIDER" in
-        github) printf 'https://raw.githubusercontent.com/%s/%s/%s' \
-                        "$REPO_SLUG" "$REPO_REF" "$1" ;;
-        gitlab) printf 'https://%s/%s/-/raw/%s/%s' \
-                        "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1" ;;
+        github)
+            printf 'https://raw.githubusercontent.com/%s/%s/%s' \
+                "$REPO_SLUG" "$REPO_REF" "$1"
+            ;;
+        gitlab)
+            if [[ -n "$REPO_TOKEN" ]]; then
+                printf 'https://%s/api/v4/projects/%s/repository/files/%s/raw?ref=%s' \
+                    "$REPO_HOST" "${REPO_SLUG//\//%2F}" "${1//\//%2F}" "$REPO_REF"
+            else
+                printf 'https://%s/%s/-/raw/%s/%s' \
+                    "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1"
+            fi
+            ;;
     esac
+}
+
+# Downloading install.sh itself when this script is piped (curl | bash).
+fetch_installer() {
+    local dst="$1" cfg="" rc=0
+    if [[ -n "$REPO_TOKEN" ]]; then
+        cfg="$(mktemp "${TMPDIR:-/var/tmp}/pve-mac-curl.XXXXXX")" || return 1
+        chmod 600 "$cfg"
+        case "$REPO_PROVIDER" in
+            github) printf 'header = "Authorization: Bearer %s"\n' "$REPO_TOKEN" > "$cfg" ;;
+            gitlab) printf 'header = "PRIVATE-TOKEN: %s"\n' "$REPO_TOKEN" > "$cfg" ;;
+        esac
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 \
+             ${cfg:+-K "$cfg"} "$(repo_raw_url install.sh)" -o "$dst" || rc=1
+    elif command -v wget >/dev/null 2>&1; then
+        if [[ -n "$REPO_TOKEN" ]]; then
+            wget -q --timeout=60 \
+                 --header="$([[ "$REPO_PROVIDER" == gitlab ]] && echo "PRIVATE-TOKEN" || echo "Authorization"): ${REPO_TOKEN}" \
+                 -O "$dst" "$(repo_raw_url install.sh)" || rc=1
+        else
+            wget -q --timeout=60 -O "$dst" "$(repo_raw_url install.sh)" || rc=1
+        fi
+    else
+        echo "need curl or wget to download install.sh" >&2
+        rc=1
+    fi
+    [[ -n "$cfg" ]] && rm -f "$cfg"
+    ((rc == 0)) && [[ -s "$dst" ]]
 }
 # BASH_SOURCE is unset when this script is piped through bash (curl | bash).
 SCRIPT_SRC="${BASH_SOURCE[0]:-}"
@@ -254,13 +300,10 @@ if [[ "$PIPED" -eq 0 && -f "${SELF_DIR}/install.sh" ]]; then
     INSTALLER="${SELF_DIR}/install.sh"
 else
     TMP_INSTALLER="$(mktemp "${TMPDIR:-/var/tmp}/pve-mac-install.XXXXXX")"
-    URL="$(repo_raw_url install.sh)"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$URL" -o "$TMP_INSTALLER"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q --timeout=60 -O "$TMP_INSTALLER" "$URL"
-    else
-        echo "need curl or wget to download install.sh" >&2
+    if ! fetch_installer "$TMP_INSTALLER"; then
+        echo "ABORT: cannot download install.sh from $(repo_raw_url install.sh)" >&2
+        echo "       If the project is private, pass a read-only token:" >&2
+        echo "         MAC_TOKEN=<token> ... | bash -s -- ..." >&2
         exit 4
     fi
     INSTALLER="$TMP_INSTALLER"
@@ -277,7 +320,11 @@ if [[ -n "${STALE// /}" ]]; then
     echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
     echo "  (their directories stay untouched; nothing is changed outside this install)"
 fi
-echo "installer:  ${REPO_SLUG}@${REPO_REF} (${REPO_PROVIDER})"
+if [[ -n "$REPO_TOKEN" ]]; then
+    echo "installer:  ${REPO_SLUG}@${REPO_REF} (${REPO_PROVIDER}, token auth)"
+else
+    echo "installer:  ${REPO_SLUG}@${REPO_REF} (${REPO_PROVIDER})"
+fi
 echo "options:    ${PASS_ARGS[*]:-<none>}"
 
 LOCAL_IN_LIST=0
@@ -409,7 +456,7 @@ for node in $NODES; do
     echo "---- [${NODE_INDEX}/${NODE_TOTAL}] ${node} ----"
     if node_is_local "$node"; then
         if ! MAC_PROVIDER="$REPO_PROVIDER" MAC_REPO="$REPO_SLUG" MAC_HOST="$REPO_HOST" \
-             MAC_REF="$REPO_REF" \
+             MAC_REF="$REPO_REF" MAC_TOKEN="$REPO_TOKEN" \
              bash "$INSTALLER" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"; then
             FAILED+=("$node")
         fi
@@ -423,11 +470,26 @@ for node in $NODES; do
         remote_cmd+=" MAC_REPO=$(printf '%q' "$REPO_SLUG")"
         remote_cmd+=" MAC_HOST=$(printf '%q' "$REPO_HOST")"
         remote_cmd+=" MAC_REF=$(printf '%q' "$REPO_REF")"
-        remote_cmd+=" bash -s --"
-        for arg in ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}; do
-            remote_cmd+=" $(printf '%q' "$arg")"
-        done
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+        if [[ -n "$REPO_TOKEN" ]]; then
+            # The token is the first line of stdin: it never lands in argv,
+            # so it is invisible to ps and to the shell history of the node.
+            remote_cmd+=" sh -c 'IFS= read -r t; MAC_TOKEN=\$t; export MAC_TOKEN; exec bash -s --"
+            for arg in ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}; do
+                remote_cmd+=" $(printf '%q' "$arg")"
+            done
+            remote_cmd+="'"
+        else
+            remote_cmd+=" bash -s --"
+            for arg in ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}; do
+                remote_cmd+=" $(printf '%q' "$arg")"
+            done
+        fi
+        if [[ -n "$REPO_TOKEN" ]]; then
+            ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+                "root@${node}" "$remote_cmd" \
+                < <(printf '%s\n' "$REPO_TOKEN"; cat "$INSTALLER") || FAILED+=("$node")
+        elif ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
                  -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
                  "root@${node}" "$remote_cmd" < "$INSTALLER"; then
             FAILED+=("$node")

@@ -19,9 +19,18 @@ set -euo pipefail
 # ---- repository source -------------------------------------------------
 # Switch hosting with MAC_PROVIDER (github|gitlab) and MAC_REPO=<owner>/<repo>.
 # For self-managed GitLab also set MAC_HOST (e.g. gitlab.example.com).
+#
+# Private projects: MAC_TOKEN=<read-only token> is sent as a header (GitLab:
+# PRIVATE-TOKEN, GitHub: Authorization: Bearer). The token never appears in a
+# URL, so it does not leak into logs or shell history of the download step.
 REPO_PROVIDER="${MAC_PROVIDER:-github}"
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
+REPO_TOKEN="${MAC_TOKEN:-}"
+if [[ -n "$REPO_TOKEN" ]] && [[ ! "$REPO_TOKEN" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    echo "MAC_TOKEN contains unexpected characters (letters, digits, . _ : - only)" >&2
+    exit 2
+fi
 case "$REPO_PROVIDER" in
     github) REPO_HOST="${MAC_HOST:-github.com}" ;;
     gitlab) REPO_HOST="${MAC_HOST:-gitlab.com}" ;;
@@ -31,21 +40,43 @@ case "$REPO_PROVIDER" in
         ;;
 esac
 
-# Raw file URL for a path inside the repo.
+# File URL for a path inside the repo. With a token, GitLab is addressed
+# through the API (the web /-/raw/ endpoint only takes ?private_token=).
 repo_raw_url() {
     case "$REPO_PROVIDER" in
-        github) printf 'https://raw.githubusercontent.com/%s/%s/%s' \
-                        "$REPO_SLUG" "$REPO_REF" "$1" ;;
-        gitlab) printf 'https://%s/%s/-/raw/%s/%s' \
-                        "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1" ;;
+        github)
+            if [[ -n "$REPO_TOKEN" ]]; then
+                printf 'https://api.github.com/repos/%s/contents/%s?ref=%s' \
+                    "$REPO_SLUG" "$1" "$REPO_REF"
+            else
+                printf 'https://raw.githubusercontent.com/%s/%s/%s' \
+                    "$REPO_SLUG" "$REPO_REF" "$1"
+            fi
+            ;;
+        gitlab)
+            if [[ -n "$REPO_TOKEN" ]]; then
+                printf 'https://%s/api/v4/projects/%s/repository/files/%s/raw?ref=%s' \
+                    "$REPO_HOST" "${REPO_SLUG//\//%2F}" "${1//\//%2F}" "$REPO_REF"
+            else
+                printf 'https://%s/%s/-/raw/%s/%s' \
+                    "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1"
+            fi
+            ;;
     esac
 }
 
 # Whole-repository archive URL (one artifact, consistent commit).
 repo_archive_url() {
     case "$REPO_PROVIDER" in
-        github) printf 'https://codeload.github.com/%s/tar.gz/%s' \
-                        "$REPO_SLUG" "$REPO_REF" ;;
+        github)
+            if [[ -n "$REPO_TOKEN" ]]; then
+                printf 'https://api.github.com/repos/%s/tarball/%s' \
+                    "$REPO_SLUG" "$REPO_REF"
+            else
+                printf 'https://codeload.github.com/%s/tar.gz/%s' \
+                    "$REPO_SLUG" "$REPO_REF"
+            fi
+            ;;
         gitlab) printf 'https://%s/api/v4/projects/%s/repository/archive.tar.gz?sha=%s' \
                         "$REPO_HOST" "${REPO_SLUG//\//%2F}" "$REPO_REF" ;;
     esac
@@ -193,17 +224,46 @@ need_root() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------- bootstrap: fetch companion files when missing ----------
+# Header line for the configured token, or nothing when anonymous access is used.
+token_header() {
+    case "$REPO_PROVIDER" in
+        github) printf 'Authorization: Bearer %s' "$REPO_TOKEN" ;;
+        gitlab) printf 'PRIVATE-TOKEN: %s' "$REPO_TOKEN" ;;
+    esac
+}
+
 download() {
     local url="$1" dst="$2" max_time="${3:-120}"
+    local cfg="" rc=0
     mkdir -p "$(dirname "$dst")"
+
+    if [[ -n "$REPO_TOKEN" ]]; then
+        # -K keeps the credential out of the process list (ps) and logs.
+        cfg="$(mktemp "${TMPDIR:-/var/tmp}/pve-mac-curl.XXXXXX")" || return 1
+        chmod 600 "$cfg"
+        {
+            printf 'header = "%s"\n' "$(token_header)"
+            [[ "$REPO_PROVIDER" == github ]] && \
+                printf 'header = "Accept: application/vnd.github.raw"\n'
+        } > "$cfg"
+    fi
+
     if have curl; then
-        curl -fsSL --retry 2 --connect-timeout 10 --max-time "$max_time" "$url" -o "$dst" || return 1
+        curl -fsSL --retry 2 --connect-timeout 10 --max-time "$max_time" \
+             ${cfg:+-K "$cfg"} "$url" -o "$dst" || rc=1
     elif have wget; then
-        wget -q --timeout="$max_time" -O "$dst" "$url" || return 1
+        if [[ -n "$REPO_TOKEN" ]]; then
+            wget -q --timeout="$max_time" --header="$(token_header)" -O "$dst" "$url" || rc=1
+        else
+            wget -q --timeout="$max_time" -O "$dst" "$url" || rc=1
+        fi
     else
         echo "need curl or wget to download ${url}" >&2
-        return 1
+        rc=1
     fi
+
+    [[ -n "$cfg" ]] && rm -f "$cfg"
+    ((rc == 0)) || return 1
     [[ -s "$dst" ]]
 }
 
@@ -280,6 +340,7 @@ bootstrap_project() {
         echo "archive download failed, falling back to individual files" >&2
         if ! fetch_files "$WORK_DIR"; then
             echo "ABORT: cannot download project files." >&2
+            echo "       Private project? Pass a read-only token: MAC_TOKEN=<token>" >&2
             echo "       Clone $(repo_web_url) and run ./install.sh there." >&2
             exit 4
         fi
