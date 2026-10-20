@@ -146,10 +146,17 @@ ssh_error_get() {
 
 ssh_error_has() { [[ " $SSH_ERROR_NODES " == *" $1 "* ]]; }
 
+# pvecm blocks while it waits for corosync, so every call gets a timeout.
+PVECM="pvecm"
+if command -v timeout >/dev/null 2>&1; then
+    PVECM="timeout 10 pvecm"
+fi
+
+pvecm_out() { $PVECM "$@" 2>/dev/null || true; }
+
 cluster_present() {
     [[ -f /etc/pve/corosync.conf ]] && return 0
-    pvecm status 2>/dev/null | grep -q '^Cluster information' && return 0
-    return 1
+    pvecm_out status | grep -q '^Cluster information'
 }
 
 detect_nodes() {
@@ -162,7 +169,7 @@ detect_nodes() {
     # EVER joined, including ones removed with 'pvecm delnode'. Membership from
     # pvecm is the only list of nodes that still exist.
     if cluster_present; then
-        members="$(pvecm nodes 2>/dev/null \
+        members="$(pvecm_out nodes \
                     | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]/ { print $3 }' \
                     | sed 's/[()]//g')"
         if [[ -n "$members" ]]; then
@@ -310,7 +317,10 @@ for node in $NODES; do
         # Keep the real reason: "Permission denied (publickey)", "Could not
         # resolve hostname", "Connection refused", "Host key verification
         # failed", a login banner, ...
-        ssh_err="$(grep -v '^Warning: Permanently added' <<<"$remote_ver" | grep -v '^\s*$' | tail -n1)"
+        ssh_err="$(printf '%s\n' "$remote_ver" \
+                    | grep -v '^Warning: Permanently added' \
+                    | grep -v '^[[:space:]]*$' \
+                    | tail -n1 || true)"
         [[ -z "$ssh_err" ]] && ssh_err="ssh exited non-zero with no output"
         printf '%-16s UNREACHABLE  (%s)\n' "$node" "$ssh_err"
         UNREACHABLE+=("$node")
@@ -353,7 +363,7 @@ fi
 # A degraded cluster is not a reason to refuse, but restarting services on a
 # node that has lost quorum should be a conscious decision.
 if cluster_present; then
-    if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
+    if pvecm_out status | grep -q 'Quorate:.*Yes'; then
         echo "cluster: quorate"
     else
         echo "WARN: cluster is not quorate; patching one node is still safe (no" >&2
@@ -364,9 +374,18 @@ else
 fi
 echo
 
+NODE_TOTAL=0
+for node in $NODES; do NODE_TOTAL=$((NODE_TOTAL + 1)); done
+echo "== installing on ${NODE_TOTAL} node(s) =="
+echo "   each node downloads the project archive, patches two files, installs"
+echo "   the collector and restarts pvedaemon/pveproxy — expect ~30-60s per node"
+echo
+
 FAILED=()
+NODE_INDEX=0
 for node in $NODES; do
-    echo "---- ${node} ----"
+    NODE_INDEX=$((NODE_INDEX + 1))
+    echo "---- [${NODE_INDEX}/${NODE_TOTAL}] ${node} ----"
     if node_is_local "$node"; then
         if ! MAC_REF="$REPO_REF" bash "$INSTALLER" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"; then
             FAILED+=("$node")
@@ -406,13 +425,13 @@ fi
 
 if cluster_present; then
     echo "== cluster health =="
-    if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
+    if pvecm_out status | grep -q 'Quorate:.*Yes'; then
         echo "quorate: yes"
     else
         echo "WARN: cluster reports no quorum — check 'pvecm status'" >&2
     fi
-    if pvecm status 2>/dev/null | grep -q '\b(online)\b'; then
-        offline="$(pvecm status 2>/dev/null | awk '/^Nodes:/{f=1;next} f && /^[0-9]/{print}' | grep -v online || true)"
+    if pvecm_out status | grep -q '\b(online)\b'; then
+        offline="$(pvecm_out status | awk '/^Nodes:/{f=1;next} f && /^[0-9]/{print}' | grep -v online || true)"
         if [[ -n "$offline" ]]; then
             echo "WARN: nodes not online:" >&2
             echo "$offline" >&2
