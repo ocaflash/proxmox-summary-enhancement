@@ -70,6 +70,10 @@ automatically, standalone servers are listed with --nodes.
   --nodes "a b c"    explicit node list instead of cluster detection
   --yes, -y          do not ask for confirmation (needed when run without a
                      terminal: cron, CI, or 'curl | bash' with stdin closed)
+
+Interactive confirmation reads the controlling terminal (/dev/tty), not
+stdin, because 'curl | bash' occupies stdin with the script itself. It waits
+MAC_CONFIRM_TIMEOUT seconds (default 60) and accepts only the word 'yes'.
   --no-verify        skip the post-install pvesh check
   --partial          patch the reachable nodes even if some are unreachable
                      (default: abort before changing anything)
@@ -113,6 +117,21 @@ node_pvesh() {
 # /dev/tty exists as a device node but cannot always be opened (no controlling
 # terminal, e.g. cron or a detached pipeline). Only a real open attempt counts.
 have_tty() { ( exec 3<>/dev/tty ) 2>/dev/null; }
+
+# Node names end up in a prompt on a terminal. A directory name in
+# /etc/pve/nodes is root-controlled but can still contain escape sequences
+# (OSC 52 clipboard writes, title changes), so print only safe characters.
+sanitize() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._-'; }
+
+# Where the prompt went, so the operator can tell which terminal is answering.
+tty_path() {
+    local t
+    # 'tty' inspects stdin, which is the script stream under 'curl | bash'.
+    # Ask the terminal device itself instead.
+    t="$( (tty < /dev/tty) 2>/dev/null || true)"
+    [[ "$t" == "not a tty" || -z "$t" ]] && t="/dev/tty"
+    printf '%s' "${t#/dev/}"
+}
 
 node_is_local() {
     [[ "$1" == "$LOCAL_NODE" || "$1" == "$LOCAL_HOSTNAME" ]]
@@ -186,7 +205,7 @@ stale_node_dirs() {
     done
 }
 
-NODES="$(detect_nodes | awk 'NF' | sort -u)"
+NODES="$(detect_nodes | awk 'NF' | sort -u | tr -cd 'A-Za-z0-9._-\n')"
 if [[ -z "$NODES" ]]; then
     echo "ABORT: no nodes detected (not a cluster and pvecm unavailable?)" >&2
     echo "       Pass --nodes \"node1 node2\"" >&2
@@ -220,7 +239,7 @@ fi
 echo "== pve-mac-monitor cluster install =="
 echo "local node: ${LOCAL_NODE}"
 echo "nodes:      $(echo "$NODES" | tr '\n' ' ')"
-STALE="$(stale_node_dirs | tr '\n' ' ')"
+STALE="$(stale_node_dirs | tr '\n' ' ' | tr -cd 'A-Za-z0-9._- ')"
 if [[ -n "${STALE// /}" ]]; then
     echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
     echo "  (their directories stay untouched; nothing is changed outside this install)"
@@ -234,21 +253,39 @@ if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
     # 'read' cannot be answered. Prompt on the controlling terminal when one
     # exists; otherwise refuse instead of silently patching.
     answer=""
+    timeout="${MAC_CONFIRM_TIMEOUT:-60}"
+    node_count="$(echo "$NODES" | wc -l | tr -d ' ')"
+    node_list="$(echo "$NODES" | tr '\n' ' ' | sed 's/ *$//')"
+
     if have_tty; then
-        node_list="$(echo "$NODES" | tr '\n' ' ' | sed 's/ *$//')"
-        printf 'Patch %s node(s) (%s)? [y/N] ' \
-            "$(echo "$NODES" | wc -l | tr -d ' ')" "$node_list" > /dev/tty 2>/dev/null || true
-        IFS= read -r answer < /dev/tty 2>/dev/null || answer=""
+        # Say exactly what will happen and on which terminal, so the answer
+        # cannot be given for a prompt the operator did not see.
+        printf 'pve-mac-monitor: about to patch %s node(s) as %s: %s\n' \
+            "$node_count" "$(id -un)" "$node_list" > /dev/tty 2>/dev/null || true
+        printf 'pve-mac-monitor: this prompt reads %s, not stdin (timeout %ss, default No).\n' \
+            "$(tty_path)" "$timeout" > /dev/tty 2>/dev/null || true
+        printf 'pve-mac-monitor: type yes to continue: ' > /dev/tty 2>/dev/null || true
+        IFS= read -r -t "$timeout" answer < /dev/tty 2>/dev/null || answer=""
     elif [[ -t 0 ]]; then
-        read -r -p "Patch all listed nodes now? [y/N] " answer
+        printf 'pve-mac-monitor: about to patch %s node(s) as %s: %s\n' \
+            "$node_count" "$(id -un)" "$node_list"
+        read -r -t "$timeout" -p "pve-mac-monitor: type yes to continue: " answer || answer=""
     else
         echo "ABORT: no terminal to confirm on and --yes not given." >&2
         echo "       Re-run with --yes:  ... | bash -s -- --nodes \"pve66 pve88\" --retention 168 --yes" >&2
         exit 2
     fi
+
     case "$answer" in
-        y|Y|yes|YES) ;;
-        *) echo "aborted (nothing was changed)"; exit 0 ;;
+        yes|YES|Yes) ;;
+        "")
+            echo "aborted: no answer within ${timeout}s (nothing was changed)" >&2
+            exit 0
+            ;;
+        *)
+            echo "aborted (nothing was changed)"
+            exit 0
+            ;;
     esac
 fi
 
