@@ -94,7 +94,7 @@ Ext.define('pve-rrd-mac', {
 
 STORE_BLOCK = """// >>> pve-mac-monitor store BEGIN
 var macTimeframe = 'hour';
-var macCf = 'average';
+var macCf = 'AVERAGE';
 try {
     var macStateProvider = Ext.state.Manager.getProvider();
     var macRrdState = macStateProvider && macStateProvider.get('proxmoxRRDTypeSelection');
@@ -117,7 +117,7 @@ var macStore = Ext.create('Proxmox.data.UpdateStore', {
 });
 me.mon(Ext.state.Manager.getProvider(), 'statechange', function (provider, skey, svalue) {
     if (skey === 'proxmoxRRDTypeSelection' && svalue && svalue.timeframe) {
-        macCf = svalue.cf || 'average';
+        macCf = svalue.cf || 'AVERAGE';
         macStore.proxy.url = '/api2/json/nodes/' + nodename + '/mac-history?timeframe=' + svalue.timeframe + '&cf=' + macCf;
         macStore.reload();
     }

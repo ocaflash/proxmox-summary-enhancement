@@ -524,6 +524,21 @@ if have pvesh; then
         echo "WARN: could not run 'pvesh get /nodes/${smoke_node}/status'; check manually:" >&2
         echo "      pvesh get /nodes/${smoke_node}/status --output-format json | grep -o '\"mac\"[^}]*}'" >&2
     fi
+
+    # The chart needs the history endpoint to answer for the exact parameters
+    # the stock timeframe selector sends (cf is AVERAGE/MAX, upper case).
+    # A parameter error here leaves the chart empty with a 1970 axis, so treat
+    # a failed call as a broken install.
+    if hist_json="$(pvesh get "/nodes/${smoke_node}/mac-history" \
+                        --timeframe hour --cf AVERAGE --output-format json 2>&1)"; then
+        points="$(grep -o '"time"' <<<"$hist_json" | wc -l | tr -d ' ')"
+        echo "API smoke test: mac-history answers (${points} points in the last hour)"
+    else
+        echo "ERROR: 'pvesh get /nodes/${smoke_node}/mac-history --timeframe hour --cf AVERAGE' failed:" >&2
+        echo "$hist_json" >&2
+        restore_backup
+        exit 11
+    fi
 else
     echo "info: pvesh not available, skipping API smoke test"
 fi

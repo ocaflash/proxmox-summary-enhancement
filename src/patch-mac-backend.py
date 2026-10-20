@@ -28,7 +28,7 @@ END = "# <<< pve-mac-monitor END"
 HIST_BEGIN = "# >>> pve-mac-monitor history BEGIN"
 HIST_END = "# <<< pve-mac-monitor history END"
 
-BLOCK = """# >>> pve-mac-monitor BEGIN (v2.3.0, idempotent)
+BLOCK = """# >>> pve-mac-monitor BEGIN (v2.3.1, idempotent)
 # Publish Hetzner MAC-limit state to the Node Summary StatusView.
 # eval-guarded: a missing or corrupt state file never breaks the API.
 eval {
@@ -50,7 +50,7 @@ eval {
 };
 # <<< pve-mac-monitor END"""
 
-HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.3.0, idempotent)
+HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.3.1, idempotent)
 __PACKAGE__->register_method({
     name => 'mac_history',
     path => 'mac-history',
@@ -69,9 +69,9 @@ __PACKAGE__->register_method({
                 optional => 1,
             },
             cf => {
-                description => "Consolidation function like rrddata",
+                description => "The RRD consolidation function (AVERAGE or MAX)",
                 type => 'string',
-                enum => ['average', 'max'],
+                enum => ['AVERAGE', 'MAX', 'average', 'max'],
                 optional => 1,
             },
         },
@@ -82,7 +82,8 @@ __PACKAGE__->register_method({
         # MAC-HIST-TIMEFRAME
         my %win = (hour => 3700, day => 90000, week => 700000, month => 3100000, year => 32000000);
         my $tf = $param->{timeframe} // 'hour';
-        my $cf = $param->{cf} // 'average';
+        # proxmoxRRDTypeSelector state holds AVERAGE/MAX (upper case).
+        my $cf = lc($param->{cf} // 'average');
         my $cut = time() - ($win{$tf} // $win{hour});
         my $f = '/var/lib/pve-mac-monitor/history.json';
         return [] unless -f $f;

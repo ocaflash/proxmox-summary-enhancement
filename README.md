@@ -225,6 +225,28 @@ Note that the FDB only holds **dynamic** entries: MACs appear after guest
 traffic and age out. `permanent`, multicast and bridge-local addresses are
 excluded by design — the same filter as in the original script.
 
+## Chart is empty (axis shows 1970)
+
+An empty chart with a 1970 axis means the store loaded **no rows**, not a
+rendering problem. Check the endpoint with exactly the parameters the stock
+selector sends (`cf` is upper case):
+
+```bash
+pvesh get /nodes/$(hostname)/mac-history --timeframe hour --cf AVERAGE --output-format json | head -c 300
+```
+
+- **points returned** — the API is fine; check the browser console and make
+  sure you hard-refreshed (Ctrl+Shift+R) so the new `pvemanagerlib.js` is
+  loaded.
+- **`Parameter verification failed - invalid value for option cf`** — the
+  backend patch is older than v2.3.1; re-run `install.sh`.
+- **`[]`** — the endpoint works but nothing is in the window: the collector may
+  have been writing zeros, or `history.json` is older than the selected
+  timeframe. Compare with `cat /var/lib/pve-mac-monitor/history.json`.
+
+`install.sh` now tests this endpoint right after restarting the services and
+rolls back if it does not answer.
+
 ## Uninstall
 
 ```bash
