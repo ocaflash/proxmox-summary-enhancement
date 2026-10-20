@@ -100,6 +100,22 @@ path = sys.argv[1]
 begin, end = os.environ["CRON_BEGIN"], os.environ["CRON_END"]
 raw = open(path).read().splitlines()
 
+# Unmarked lines emitted by pre-marker versions of this project. Only exact
+# forms are dropped, so foreign schedules in the same file stay untouched.
+LEGACY_HEADER = "# Managed by patch_pve_summary.sh (pve-mac-monitor). Do not edit by hand."
+LEGACY_LINES = {
+    LEGACY_HEADER,
+    "SHELL=/bin/sh",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    'MAILTO=""',
+    "MAC_SAMPLE_INTERVAL=60",
+}
+LEGACY_CRON = (
+    "* * * * * root MAC_SAMPLE_INTERVAL=60",
+    "* * * * * root /usr/local/bin/pve-mac-monitor",
+)
+legacy_owned = LEGACY_HEADER in [line.strip() for line in raw]
+
 out, inside = [], False
 for line in raw:
     stripped = line.strip()
@@ -110,6 +126,8 @@ for line in raw:
         inside = False
         continue
     if inside:
+        continue
+    if legacy_owned and (stripped in LEGACY_LINES or stripped.startswith(LEGACY_CRON)):
         continue
     out.append(line)
 
