@@ -15,7 +15,15 @@ set -euo pipefail
 
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# BASH_SOURCE is unset when this script is piped through bash (curl | bash).
+SCRIPT_SRC="${BASH_SOURCE[0]:-}"
+PIPED=0
+if [[ -n "$SCRIPT_SRC" && -f "$SCRIPT_SRC" ]]; then
+    SELF_DIR="$(cd "$(dirname "$SCRIPT_SRC")" && pwd)"
+else
+    SELF_DIR="$(pwd)"
+    PIPED=1
+fi
 
 PASS_ARGS=()
 CHECK_ONLY=0
@@ -110,7 +118,7 @@ TMP_INSTALLER=""
 cleanup() { [[ -n "$TMP_INSTALLER" ]] && rm -f "$TMP_INSTALLER"; true; }
 trap cleanup EXIT INT TERM
 
-if [[ -f "${SELF_DIR}/install.sh" ]]; then
+if [[ "$PIPED" -eq 0 && -f "${SELF_DIR}/install.sh" ]]; then
     INSTALLER="${SELF_DIR}/install.sh"
 else
     TMP_INSTALLER="$(mktemp "${TMPDIR:-/var/tmp}/pve-mac-install.XXXXXX")"
