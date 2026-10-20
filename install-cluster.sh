@@ -191,7 +191,7 @@ stale_node_dirs() {
     done
 }
 
-NODES="$(detect_nodes | awk 'NF' | sort -u | tr -cd 'A-Za-z0-9._-\n')"
+NODES="$(detect_nodes | awk 'NF' | sort -u | tr -cd 'A-Za-z0-9._\n-')"
 if [[ -z "$NODES" ]]; then
     echo "ABORT: no nodes detected (not a cluster and pvecm unavailable?)" >&2
     echo "       Pass --nodes \"node1 node2\"" >&2
@@ -225,7 +225,7 @@ fi
 echo "== pve-mac-monitor cluster install =="
 echo "local node: ${LOCAL_NODE}"
 echo "nodes:      $(echo "$NODES" | tr '\n' ' ')"
-STALE="$(stale_node_dirs | tr '\n' ' ' | tr -cd 'A-Za-z0-9._- ')"
+STALE="$(stale_node_dirs | tr '\n' ' ' | tr -cd 'A-Za-z0-9._ -')"
 if [[ -n "${STALE// /}" ]]; then
     echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
     echo "  (their directories stay untouched; nothing is changed outside this install)"
