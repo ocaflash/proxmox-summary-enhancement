@@ -35,6 +35,28 @@ curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancemen
   | bash -s -- --check-only
 ```
 
+### Several nodes (cluster)
+
+The monitor is per-node: the MAC count comes from the local bridge FDB, every
+Hetzner server has its own 32-MAC limit, and the node status API is served by
+the node that owns it. The GUI JavaScript is served by the node you connect
+to, so **every node needs both the patch and the collector**. Use the driver:
+
+```bash
+# from a checkout on any cluster node (root ssh between nodes is already set up)
+./install-cluster.sh --check-only                 # dry run on all nodes
+./install-cluster.sh --retention 168              # install on all nodes
+./install-cluster.sh --nodes "pve1 pve2 pve3" -y  # explicit list
+```
+
+It detects nodes from `/etc/pve/nodes`, streams `install.sh` to each node over
+ssh and verifies the `mac` field with `pvesh` afterwards. Uninstall on every
+node:
+
+```bash
+for n in $(ls /etc/pve/nodes); do ssh root@$n pve-mac-monitor-uninstall; done
+```
+
 From a checkout:
 
 ```bash
@@ -118,6 +140,7 @@ install, otherwise it would downgrade the package files. History in
 
 ```
 install.sh                        # self-contained installer (downloads the rest)
+install-cluster.sh                # runs install.sh on every cluster node
 uninstall.sh                      # removes patches, collector, cron entry
 pve-mac-monitor.sh                # collector (cron, every minute)
 VERSION

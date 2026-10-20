@@ -48,6 +48,7 @@ CRON_BLOCK_FILE=""
 cleanup() {
     if [[ -n "$CRON_BLOCK_FILE" ]]; then rm -f "$CRON_BLOCK_FILE"; fi
     if [[ -n "$WORK_DIR" ]]; then rm -rf "$WORK_DIR"; fi
+    true  # never let the EXIT trap override the script exit status
 }
 trap cleanup EXIT INT TERM
 
