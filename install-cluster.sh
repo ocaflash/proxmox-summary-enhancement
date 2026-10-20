@@ -111,6 +111,7 @@ node_pvesh() {
         pvesh get "$path" --output-format json "$@" 2>/dev/null
     else
         ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             "root@${node}" "pvesh get $(printf '%q' "$path") --output-format json $*" 2>/dev/null
     fi
 }
@@ -310,6 +311,7 @@ for node in $NODES; do
     fi
     ssh_err=""
     if remote_ver="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+                        -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
                         "root@${node}" "pveversion 2>/dev/null | head -n1" 2>&1)" \
        && [[ -n "$remote_ver" ]]; then
         printf '%-16s %s\n' "$node" "$(head -n1 <<<"$remote_ver")"
@@ -398,6 +400,7 @@ for node in $NODES; do
             remote_cmd+=" $(printf '%q' "$arg")"
         done
         if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+                 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
                  "root@${node}" "$remote_cmd" < "$INSTALLER"; then
             FAILED+=("$node")
         fi
