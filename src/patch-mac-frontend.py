@@ -88,11 +88,7 @@ ROWS = """{
 MODEL_BLOCK = """// >>> pve-mac-monitor model BEGIN
 Ext.define('pve-rrd-mac', {
     extend: 'Ext.data.Model',
-    fields: [
-        'mac',
-        'macmax',
-        { type: 'date', dateFormat: 'timestamp', name: 'time' },
-    ],
+    fields: ['mac', { type: 'date', dateFormat: 'timestamp', name: 'time' }],
 });
 // <<< pve-mac-monitor model END"""
 
@@ -132,9 +128,9 @@ CHART_BLOCK = """// >>> pve-mac-monitor chart BEGIN
 {
     title: gettext('MAC addresses (used)'),
     xtype: 'proxmoxRRDChart',
-    // two series: per-bucket average and maximum (identical at full resolution)
-    fields: ['mac', 'macmax'],
-    fieldTitles: [gettext('MACs (average)'), gettext('MACs (maximum)')],
+    // one series; the stock Average/Maximum toggle selects the value (cf)
+    fields: ['mac'],
+    fieldTitles: [gettext('MACs')],
     store: macStore,
 },
 // <<< pve-mac-monitor chart END"""
