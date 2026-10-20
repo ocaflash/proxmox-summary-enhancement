@@ -71,13 +71,13 @@ automatically, standalone servers are listed with --nodes.
   --nodes "a b c"    explicit node list instead of cluster detection
   --yes, -y          do not ask for confirmation (needed when run without a
                      terminal: cron, CI, or 'curl | bash' with stdin closed)
+  --no-verify        skip the post-install pvesh check
+  --partial          patch the reachable nodes even if some are unreachable
+                     (default: abort before changing anything)
 
 Without --yes the script asks for the word 'yes'. The question is read from
 stdin only, so it works when run from a checkout in a terminal; 'curl | bash'
 occupies stdin with the script itself, so there --yes is required.
-  --no-verify        skip the post-install pvesh check
-  --partial          patch the reachable nodes even if some are unreachable
-                     (default: abort before changing anything)
 
 Uninstall everywhere: ./install-cluster.sh --nodes ... (then run
 pve-mac-monitor-uninstall on each node), or loop manually:
