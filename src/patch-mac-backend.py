@@ -28,7 +28,7 @@ END = "# <<< pve-mac-monitor END"
 HIST_BEGIN = "# >>> pve-mac-monitor history BEGIN"
 HIST_END = "# <<< pve-mac-monitor history END"
 
-BLOCK = """# >>> pve-mac-monitor BEGIN (v2.3.1, idempotent)
+BLOCK = """# >>> pve-mac-monitor BEGIN (v2.4.0, idempotent)
 # Publish Hetzner MAC-limit state to the Node Summary StatusView.
 # eval-guarded: a missing or corrupt state file never breaks the API.
 eval {
@@ -50,7 +50,7 @@ eval {
 };
 # <<< pve-mac-monitor END"""
 
-HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.3.1, idempotent)
+HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.4.0, idempotent)
 __PACKAGE__->register_method({
     name => 'mac_history',
     path => 'mac-history',
@@ -69,21 +69,34 @@ __PACKAGE__->register_method({
                 optional => 1,
             },
             cf => {
-                description => "The RRD consolidation function (AVERAGE or MAX)",
+                description => "Accepted for compatibility; average and maximum"
+                    . " are always returned as separate series",
                 type => 'string',
                 enum => ['AVERAGE', 'MAX', 'average', 'max'],
                 optional => 1,
             },
         },
     },
-    returns => { type => "array" },
+    returns => {
+        type => "array",
+        items => {
+            type => "object",
+            properties => {
+                time => { type => 'integer' },
+                mac => { type => 'integer', description => "average MAC count" },
+                macmax => { type => 'integer', description => "maximum MAC count in the bucket" },
+            },
+        },
+    },
     code => sub {
         my ($param) = @_;
         # MAC-HIST-TIMEFRAME
         my %win = (hour => 3700, day => 90000, week => 700000, month => 3100000, year => 32000000);
         my $tf = $param->{timeframe} // 'hour';
-        # proxmoxRRDTypeSelector state holds AVERAGE/MAX (upper case).
-        my $cf = lc($param->{cf} // 'average');
+        # cf is accepted for compatibility with the stock selector; both the
+        # average and the maximum are always returned as two series, because at
+        # full resolution (one point per minute) they are identical and the
+        # toggle would otherwise look broken.
         my $cut = time() - ($win{$tf} // $win{hour});
         my $f = '/var/lib/pve-mac-monitor/history.json';
         return [] unless -f $f;
@@ -98,7 +111,8 @@ __PACKAGE__->register_method({
             next unless ref($p) eq 'HASH';
             next unless defined($p->{t}) && "$p->{t}" =~ /^\\d+$/ && $p->{t} >= $cut;
             next unless defined($p->{v}) && "$p->{v}" =~ /^\\d+$/;
-            push @pts, { time => int($p->{t}), mac => int($p->{v}) };
+            my $v = int($p->{v});
+            push @pts, { time => int($p->{t}), mac => $v, macmax => $v };
         }
         if (@pts > 800) {
             my $per = int(@pts / 800) + 1;
@@ -113,8 +127,11 @@ __PACKAGE__->register_method({
                     $vsum += $q->{mac};
                     $vmax = $q->{mac} if $q->{mac} > $vmax;
                 }
-                my $val = $cf eq 'max' ? $vmax : int($vsum / $n + 0.5);
-                push @avg, { time => int($tsum / $n), mac => $val };
+                push @avg, {
+                    time => int($tsum / $n),
+                    mac => int($vsum / $n + 0.5),
+                    macmax => $vmax,
+                };
             }
             @pts = @avg;
         }
