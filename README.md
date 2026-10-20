@@ -82,6 +82,64 @@ Options: `--check-only`, `--force` (skip the version guard), `--retention HOURS`
 `MAC_REPO=<owner>/<repo>` points the download at a fork; `MAC_REF=<ref>` does
 the same as `--ref`.
 
+## Safety model
+
+What the installer does and does not do, and what protects the cluster.
+
+**Never touched** (this is why a node keeps working even if the patch is wrong):
+
+- `/etc/pve/**` — `corosync.conf`, `nodes.conf`, VM/CT configs, replication,
+  HA rules. The cluster stack (`corosync`, `pmxcfs`, `pve-cluster`) is never
+  restarted or reconfigured.
+- RRD data and the `pve2-node` schema, `/etc/network/interfaces`, bridges,
+  firewall, storage, `pvestatd`.
+- Only two files are modified, both from `pve-manager`:
+  `API2/Nodes.pm` and `js/pvemanagerlib.js`, and only inside
+  `# >>> pve-mac-monitor` markers.
+
+**Guards before a change is made**
+
+- version guard on `pve-manager` (8.x/9.x) — aborts on an unknown version
+  unless `--force`;
+- `--check-only` prints anchor state and changes nothing;
+- timestamped backup of both files in
+  `/var/backups/pve-mac-monitor-<ts>/` with `SHA256SUMS`, never reused.
+
+**Guards after a change**
+
+- `perl -c Nodes.pm` → rollback on error;
+- `node --check pvemanagerlib.js` (when `node` is present) → rollback on error;
+- `systemctl restart` failure or an inactive unit → rollback + services
+  restarted from the backup;
+- API smoke test: `pvesh get /nodes/<node>/status` must expose `macstats`,
+  otherwise rollback (exit 10).
+
+**Cluster-level (`install-cluster.sh`)**
+
+- pre-flight: every node must answer over ssh (`pveversion`) before anything is
+  patched; unreachable node aborts the whole run with nothing changed;
+- nodes are patched sequentially, never in parallel, so quorum and the GUI stay
+  available during the rollout;
+- warns if the cluster is not quorate, and re-checks quorum and node online
+  state afterwards;
+- a failing node is reported and the script exits non-zero; each node is
+  idempotent, so re-running repairs a partially applied state.
+
+**Residual risks (honest list)**
+
+- `node --check` validates syntax only. A JS runtime error in a patched row
+  would break the node Summary for that node (the API, VM management, cluster
+  and storage stay unaffected). Mitigation: roll back with
+  `pve-mac-monitor-uninstall`, or restore the backup.
+- A `pve-manager` upgrade overwrites both patched files. The GUI rows and the
+  `mac` field disappear until `install.sh` is re-run; nothing breaks.
+- The collector runs as root every minute. It only reads `qm list`, `pct list`,
+  `bridge fdb show` and writes under `/var/lib/pve-mac-monitor`; `flock`
+  prevents overlap.
+- `uninstall.sh --from-backup` restores the files as they were at install time.
+  Do not use it after a `pve-manager` upgrade, it would downgrade the package
+  files; plain `uninstall.sh` is safe at any time.
+
 ## Requirements
 
 - Proxmox VE 8.x / 9.x, root

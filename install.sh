@@ -481,24 +481,52 @@ fi
 MAC_RETENTION_HOURS="$RETENTION_HOURS" "$COLLECTOR_DST" || true
 
 # ---------- 7. Restart services (both: Perl API + JS) ----------
-echo "-- restart pvedaemon + pveproxy --"
-systemctl restart pvedaemon.service
-sleep 2
-if ! systemctl is-active --quiet pvedaemon.service; then
-    echo "ERROR: pvedaemon failed to start" >&2
-    restore_backup
-    exit 8
-fi
-echo "pvedaemon: active"
+# restart_service must not abort on a non-zero systemctl call: with `set -e`
+# that would skip the rollback and leave the node patched but unverified.
+restart_service() {
+    local unit="$1" code="$2"
+    if ! systemctl restart "$unit"; then
+        echo "ERROR: systemctl restart ${unit} failed" >&2
+        systemctl status "$unit" --no-pager --lines=20 >&2 || true
+        restore_backup
+        exit "$code"
+    fi
+    sleep 2
+    if ! systemctl is-active --quiet "$unit"; then
+        echo "ERROR: ${unit} is not active after restart" >&2
+        systemctl status "$unit" --no-pager --lines=20 >&2 || true
+        restore_backup
+        exit "$code"
+    fi
+    echo "${unit%.service}: active"
+}
 
-systemctl restart pveproxy.service
-sleep 2
-if ! systemctl is-active --quiet pveproxy.service; then
-    echo "ERROR: pveproxy failed to start" >&2
-    restore_backup
-    exit 9
+echo "-- restart pvedaemon + pveproxy --"
+restart_service pvedaemon.service 8
+restart_service pveproxy.service 9
+
+# ---------- 7b. Post-install smoke test ----------
+# If the patched API answers but does not expose the new fields, the patch did
+# not take effect on this node: roll back instead of leaving a half-working UI.
+if have pvesh; then
+    # PVE node name may differ from the OS hostname; pvecm knows the real one.
+    smoke_node="$(pvecm nodename 2>/dev/null || hostname -s)"
+    if smoke_json="$(pvesh get "/nodes/${smoke_node}/status" --output-format json 2>/dev/null)"; then
+        if grep -q '"macstats"' <<<"$smoke_json"; then
+            echo "API smoke test: mac fields present"
+        else
+            echo "ERROR: node status API answers but has no mac fields" >&2
+            echo "       (state file missing or backend patch inactive) — rolling back" >&2
+            restore_backup
+            exit 10
+        fi
+    else
+        echo "WARN: could not run 'pvesh get /nodes/${smoke_node}/status'; check manually:" >&2
+        echo "      pvesh get /nodes/${smoke_node}/status --output-format json | grep -o '\"mac\"[^}]*}'" >&2
+    fi
+else
+    echo "info: pvesh not available, skipping API smoke test"
 fi
-echo "pveproxy: active"
 
 # ---------- 8. Summary ----------
 cat <<EOF

@@ -153,6 +153,42 @@ if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
     esac
 fi
 
+# ---------- pre-flight: nothing is patched unless every node is reachable ----
+echo "== pre-flight =="
+UNREACHABLE=()
+for node in $NODES; do
+    if [[ "$node" == "$LOCAL_NODE" ]]; then
+        printf '%-16s local\n' "$node"
+        continue
+    fi
+    remote_ver="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+                    "root@${node}" "pveversion 2>/dev/null | head -n1" 2>/dev/null || true)"
+    if [[ -z "$remote_ver" ]]; then
+        printf '%-16s UNREACHABLE\n' "$node"
+        UNREACHABLE+=("$node")
+    else
+        printf '%-16s %s\n' "$node" "$remote_ver"
+    fi
+done
+if ((${#UNREACHABLE[@]})); then
+    echo >&2
+    echo "ABORT: unreachable over ssh: ${UNREACHABLE[*]}" >&2
+    echo "       Nothing was changed. Fix root ssh access (or pass --nodes) and retry." >&2
+    exit 3
+fi
+
+# A degraded cluster is not a reason to refuse, but restarting services on a
+# node that has lost quorum should be a conscious decision.
+if command -v pvecm >/dev/null 2>&1; then
+    if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
+        echo "cluster: quorate"
+    else
+        echo "WARN: cluster is not quorate; patching one node is still safe (no" >&2
+        echo "      cluster config is touched), but check 'pvecm status' first." >&2
+    fi
+fi
+echo
+
 FAILED=()
 for node in $NODES; do
     echo "---- ${node} ----"
@@ -186,8 +222,27 @@ if [[ "$VERIFY" -eq 1 && "$CHECK_ONLY" -eq 0 ]]; then
     echo "Open Node -> Summary for any node and hard-refresh (Ctrl+Shift+R)."
 fi
 
+if command -v pvecm >/dev/null 2>&1; then
+    echo "== cluster health =="
+    if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
+        echo "quorate: yes"
+    else
+        echo "WARN: cluster reports no quorum — check 'pvecm status'" >&2
+    fi
+    if pvecm status 2>/dev/null | grep -q '\b(online)\b'; then
+        offline="$(pvecm status 2>/dev/null | awk '/^Nodes:/{f=1;next} f && /^[0-9]/{print}' | grep -v online || true)"
+        if [[ -n "$offline" ]]; then
+            echo "WARN: nodes not online:" >&2
+            echo "$offline" >&2
+        fi
+    fi
+    echo
+fi
+
 if ((${#FAILED[@]})); then
     echo "FAILED nodes: ${FAILED[*]}" >&2
+    echo "Each node is idempotent and rolls back on its own; re-run this script" >&2
+    echo "to retry, or restore with: ssh root@<node> pve-mac-monitor-uninstall --from-backup" >&2
     exit 5
 fi
 echo "all nodes done"
