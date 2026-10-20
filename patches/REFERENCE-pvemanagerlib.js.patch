@@ -1,26 +1,53 @@
-REFERENCE — pvemanagerlib.js (pve-mac-monitor v2.2.0)
+REFERENCE — pvemanagerlib.js (pve-mac-monitor v2.3.0)
 File: /usr/share/pve-manager/js/pvemanagerlib.js
 
 A) Ext.define('PVE.node.StatusView')
 
-  - status box height: any value < 420 is raised to 420 (350->420 on stock
-    PVE 8/9; two extra full-width rows need ~60px). Larger values (e.g. 600
-    from proxmox-summary-enhancement) are left untouched, so both patches
-    coexist.
-  - two pmxInfoWidget rows inserted after the Manager Version row
-    (textField: 'pveversion'), wrapped in // >>> pve-mac-monitor markers:
-      1) itemId 'macstats'       colspan 2, valueField/maxField 'mac',
-                                 printBar, inline renderer -> "N / 32 (P%)".
-                                 Proxmox.widget.Info compares strictly
-                                 (usage > threshold), so thresholds sit one
-                                 MAC below the first level that must trigger
-                                 them: warningThreshold 0.84375 (27/32 ->
-                                 amber from 28) and criticalThreshold 0.9375
-                                 (30/32 -> red from 31).
-      2) itemId 'macstats_peaks' colspan 2, multiField (record renderer, same
-                                 pattern as the stock Kernel Version row) ->
-                                 reads data.macstats.max_15min / max_1h /
-                                 max_24h.
+  - status box height: any value < 400 is raised to 400 (350->400 on stock
+    PVE 8/9). Larger values (e.g. 600 from proxmox-summary-enhancement) are
+    left untouched, so both patches coexist.
+  - rows inserted after the Manager Version row (textField: 'pveversion'),
+    wrapped in // >>> pve-mac-monitor markers. Layout follows the
+    pve-mac-monitor-orig.sh design: bar + spacer + peaks + spacer.
+
+      1) bar row (valueField/maxField => native usage bar):
+             {
+                 iconCls: 'fa fa-fw fa-sitemap',
+                 itemId: 'macstats',
+                 title: gettext('Hetzner MAC Limit'),
+                 valueField: 'mac_current',
+                 maxField: 'mac_limit',
+                 printBar: true,
+                 warningThreshold: 0.84375,
+                 criticalThreshold: 0.9375,
+                 renderer: function(value, max) { ... "N / 32 (P%)" ... },
+             },
+         Proxmox.widget.Info compares strictly (usage > threshold), so a
+         threshold sits one MAC below the level that must trigger it while
+         staying above the previous level:
+             criticalThreshold 0.9375  => 30/32 is below, 31/32 is critical (red)
+             warningThreshold  0.84375 => 27/32 is below, 28/32 is warning (amber)
+         criticalThreshold: 1.0 (as in the early prototype) never fires,
+         because 32/32 > 1.0 is false.
+
+      2) spacer cell:
+             { xtype: 'box', html: '&nbsp;', padding: '0 10 5 10' },
+
+      3) peaks row (textField passes the whole object to the renderer):
+             {
+                 iconCls: 'fa fa-fw fa-history',
+                 itemId: 'macstats_peaks',
+                 printBar: false,
+                 title: gettext('MAC peaks'),
+                 textField: 'macstats',
+                 renderer: function(value) { ... 15m / 1h / 24h ... },
+             },
+
+      4) second spacer cell.
+
+      textField is required for object-valued rows: InfoWidget.updateField
+      only calls updateValue for multiField/textField/valueField rows. A
+      renderer-only row stays empty without any error.
 
 B) Ext.define('PVE.node.Summary')
 
@@ -34,7 +61,7 @@ B) Ext.define('PVE.node.Summary')
 
   - store before `var rrdstore = Ext.create('Proxmox.data.RRDStore', ...)`:
       // >>> pve-mac-monitor store BEGIN
-      var macTimeframe = 'hour';           // default matches RRDStore
+      var macTimeframe = 'hour';           // defaults match RRDStore
       var macCf = 'average';               // both read from the
       // 'proxmoxRRDTypeSelection' state (same key the stock charts use)
       var macStore = Ext.create('Proxmox.data.UpdateStore', {
@@ -72,8 +99,6 @@ Notes:
   - Same proxmoxRRDChart + UpdateStore + date-model pattern as the stock
     CPU/Memory charts, so bars, tooltips and the timeframe selector behave
     natively.
-  - multiField is required for object-valued rows: InfoWidget only calls
-    updateValue for valueField/textField/multiField rows.
   - Insertion is whitespace-tolerant, appends to the end of the Summary items
     array, and is idempotent (blocks are rebuilt from markers on re-run).
 

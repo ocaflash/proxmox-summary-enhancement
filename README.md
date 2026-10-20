@@ -183,6 +183,48 @@ journalctl -t pve-mac-monitor --no-pager | tail
 
 Then hard-refresh the browser (Ctrl+Shift+R) on Node → Summary.
 
+## Why `current` can be 0
+
+The counting logic is the one from `pve-mac-monitor-orig.sh`, unchanged:
+running guests -> `vmbr*` bridges that have an `en*/eth*/bond*` port -> guest
+ports `tap*/veth*/fwpr*` -> `bridge fdb show`, filtered to dynamic unicast
+entries of those ports. If the result is 0, one of those four steps found
+nothing. `state.json` records which:
+
+```json
+"diag": {"bridges":"1","external":"1","uplinks":"vmbr0:eno1","running":"3",
+         "guest_ports":"4","all_guest_ports":"4","fdb_lines":"37",
+         "bridge_cmd":"1"}
+```
+
+Read it left to right:
+
+| diag field | 0 means |
+|---|---|
+| `bridges` | no `vmbr*` interface at all (`ip -br link | grep vmbr`) |
+| `external` | no bridge has a physical uplink port (`ip link show master vmbr0`) |
+| `uplinks` | which bridge:port pairs were detected (informational) |
+| `running` | `qm list` / `pct list` report no running guests |
+| `all_guest_ports` | no `tap*/veth*/fwpr*` on any bridge |
+| `guest_ports` | ports exist but their VMIDs are not in the running list: check that `qm list` column 3 is `running`. `all_guest_ports` counts every port, `guest_ports` only matching ones |
+| `fdb_lines` | `bridge fdb show br <bridge>` returned nothing (empty FDB) |
+| `bridge_cmd` | the `bridge` binary is not in `PATH` |
+
+Then run it by hand for the full picture:
+
+```bash
+MAC_VERBOSE=1 MAC_DEBUG=1 /usr/local/bin/pve-mac-monitor
+```
+
+This prints the same counters, every counted MAC, the raw FDB dump and a
+per-guest-port entry count, e.g. `tap100i0: 1`. A port with 0 entries tells you
+the bridge never learned that guest's MAC (no traffic yet, VLAN mismatch, or the
+guest is attached to a different bridge).
+
+Note that the FDB only holds **dynamic** entries: MACs appear after guest
+traffic and age out. `permanent`, multicast and bridge-local addresses are
+excluded by design — the same filter as in the original script.
+
 ## Uninstall
 
 ```bash

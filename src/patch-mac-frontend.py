@@ -2,7 +2,7 @@
 """patch-mac-frontend.py — idempotent pvemanagerlib.js patch for pve-mac-monitor.
 
 In PVE.node.StatusView:
-  - raises the status box height to 420 only when it is smaller
+  - raises the status box height to 400 only when it is smaller
   - inserts two rows after the Manager Version row:
       macstats        bar + "used / limit (pct)" from the `mac` {used,total} field
       macstats_peaks  15m / 1h / 24h peaks from the `macstats` object
@@ -24,8 +24,9 @@ import sys
 
 TARGET = pathlib.Path(os.environ.get("PVE_MGR_JS", "/usr/share/pve-manager/js/pvemanagerlib.js"))
 
-# Two extra full-width rows need ~60px more than the stock 350px box.
-TARGET_HEIGHT = 420
+# The two added rows (bar + peaks, each with a spacer cell) need ~50px more
+# than the stock 350px box at the default PVE row height.
+TARGET_HEIGHT = 400
 
 BEGIN = "// >>> pve-mac-monitor BEGIN"
 END = "// <<< pve-mac-monitor END"
@@ -38,40 +39,50 @@ CHART_END = "// <<< pve-mac-monitor chart END"
 HOOK_MARK = "// pve-mac-monitor hook"
 
 ROWS = """{
-    itemId: 'macstats',
     iconCls: 'fa fa-fw fa-sitemap',
+    itemId: 'macstats',
     title: gettext('Hetzner MAC Limit'),
-    valueField: 'mac',
-    maxField: 'mac',
-    colspan: 2,
+    valueField: 'mac_current',
+    maxField: 'mac_limit',
     printBar: true,
     // Proxmox.widget.Info compares strictly (usage > threshold), so each
-    // threshold is set one MAC below the first level that must trigger it:
-    // amber from 28/32, red from 31/32 (Hetzner hard limit is 32).
+    // threshold sits one MAC below the level that must trigger it:
+    // 0.84375 = 27/32 -> amber from 28/32
+    // 0.9375  = 30/32 -> red from 31/32
     warningThreshold: 0.84375,
     criticalThreshold: 0.9375,
-    renderer: function(record) {
-        if (!record || !Ext.isNumeric(record.used) || !Ext.isNumeric(record.total) || record.total <= 0) {
+    renderer: function(value, max) {
+        if (!Ext.isNumeric(value)) {
             return '-';
         }
-        return record.used + ' / ' + record.total + ' (' + Math.round((record.used / record.total) * 100) + '%)';
+        var total = Ext.isNumeric(max) && max > 0 ? max : 32;
+        return value + ' / ' + total + ' (' + Math.round((value / total) * 100) + '%)';
     },
 },
 {
-    itemId: 'macstats_peaks',
+    xtype: 'box',
+    html: '&nbsp;',
+    padding: '0 10 5 10',
+},
+{
     iconCls: 'fa fa-fw fa-history',
-    title: gettext('MAC peaks'),
+    itemId: 'macstats_peaks',
     printBar: false,
-    colspan: 2,
-    multiField: true,
-    renderer: function(widget) {
-        var s = widget && widget.data && widget.data.macstats;
-        if (!s || typeof s !== 'object') {
+    title: gettext('MAC peaks'),
+    textField: 'macstats',
+    renderer: function(value) {
+        if (!value || typeof value !== 'object') {
             return '-';
         }
-        return '15m: ' + (s.max_15min || 0) + ' / 1h: ' + (s.max_1h || 0) + ' / 24h: ' + (s.max_24h || 0);
+        return '15m: ' + (value.max_15min || 0) +
+               ' / 1h: ' + (value.max_1h || 0) +
+               ' / 24h: ' + (value.max_24h || 0);
     },
-    value: '',
+},
+{
+    xtype: 'box',
+    html: '&nbsp;',
+    padding: '0 10 5 10',
 },"""
 
 MODEL_BLOCK = """// >>> pve-mac-monitor model BEGIN
