@@ -58,7 +58,8 @@ while [[ $# -gt 0 ]]; do
             cat <<'EOF'
 Usage: ./install-cluster.sh [options]
 
-Installs pve-mac-monitor on every node of the local Proxmox cluster.
+Installs pve-mac-monitor on every node: cluster members are detected
+automatically, standalone servers are listed with --nodes.
 
   --check-only       dry run on each node (no changes)
   --force            bypass the pve-manager version guard
