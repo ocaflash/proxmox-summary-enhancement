@@ -217,9 +217,8 @@ echo "local node: ${LOCAL_NODE}"
 echo "nodes:      $(echo "$NODES" | tr '\n' ' ')"
 STALE="$(stale_node_dirs | tr '\n' ' ')"
 if [[ -n "${STALE// /}" ]]; then
-    echo "ignoring /etc/pve/nodes leftovers: ${STALE% }"
-    echo "  (removed from the cluster but their directory is still there;"
-    echo "   delete with: rm -rf /etc/pve/nodes/<name>  after checking 'pvecm nodes')"
+    echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
+    echo "  (their directories stay untouched; nothing is changed outside this install)"
 fi
 echo "installer:  ${REPO_SLUG}@${REPO_REF}"
 echo "options:    ${PASS_ARGS[*]:-<none>}"
