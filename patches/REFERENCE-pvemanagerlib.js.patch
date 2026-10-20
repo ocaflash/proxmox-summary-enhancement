@@ -1,0 +1,80 @@
+REFERENCE — pvemanagerlib.js (pve-mac-monitor v2.2.0)
+File: /usr/share/pve-manager/js/pvemanagerlib.js
+
+A) Ext.define('PVE.node.StatusView')
+
+  - status box height: any value < 420 is raised to 420 (350->420 on stock
+    PVE 8/9; two extra full-width rows need ~60px). Larger values (e.g. 600
+    from proxmox-summary-enhancement) are left untouched, so both patches
+    coexist.
+  - two pmxInfoWidget rows inserted after the Manager Version row
+    (textField: 'pveversion'), wrapped in // >>> pve-mac-monitor markers:
+      1) itemId 'macstats'       colspan 2, valueField/maxField 'mac',
+                                 printBar, inline renderer -> "N / 32 (P%)".
+                                 Proxmox.widget.Info compares strictly
+                                 (usage > threshold), so thresholds sit one
+                                 MAC below the first level that must trigger
+                                 them: warningThreshold 0.84375 (27/32 ->
+                                 amber from 28) and criticalThreshold 0.9375
+                                 (30/32 -> red from 31).
+      2) itemId 'macstats_peaks' colspan 2, multiField (record renderer, same
+                                 pattern as the stock Kernel Version row) ->
+                                 reads data.macstats.max_15min / max_1h /
+                                 max_24h.
+
+B) Ext.define('PVE.node.Summary')
+
+  - model before the Summary define:
+      // >>> pve-mac-monitor model BEGIN
+      Ext.define('pve-rrd-mac', {
+          extend: 'Ext.data.Model',
+          fields: ['mac', { type: 'date', dateFormat: 'timestamp', name: 'time' }],
+      });
+      // <<< pve-mac-monitor model END
+
+  - store before `var rrdstore = Ext.create('Proxmox.data.RRDStore', ...)`:
+      // >>> pve-mac-monitor store BEGIN
+      var macTimeframe = 'hour';           // default matches RRDStore
+      var macCf = 'average';               // both read from the
+      // 'proxmoxRRDTypeSelection' state (same key the stock charts use)
+      var macStore = Ext.create('Proxmox.data.UpdateStore', {
+          interval: 60000,
+          autoStart: true,
+          model: 'pve-rrd-mac',
+          storeid: 'pve-mac-history',
+          proxy: { type: 'proxmox',
+                   url: '/api2/json/nodes/' + nodename + '/mac-history'
+                        + '?timeframe=' + macTimeframe + '&cf=' + macCf },
+      });
+      // statechange listener -> reload on Hour/Day/Week/Month/Year change
+      // <<< pve-mac-monitor store END
+
+  - chart appended to the Summary chart container's `items: [...]` array
+    (after Memory Pressure Stall). On PVE 9 the charts live in a nested
+    `xtype: 'container', itemId: 'itemcontainer'` column layout, so the
+    patcher anchors on the last proxmoxRRDChart and picks the innermost
+    enclosing items array instead of the outer panel items list:
+      // >>> pve-mac-monitor chart BEGIN
+      {
+          title: gettext('MAC addresses (used)'),
+          xtype: 'proxmoxRRDChart',
+          fields: ['mac'],
+          fieldTitles: [gettext('MACs')],
+          store: macStore,
+      },
+      // <<< pve-mac-monitor chart END
+
+  - panel lifecycle hooks (single lines marked `// pve-mac-monitor hook`):
+      after rrdstore.startUpdate();  -> macStore.startUpdate();
+      after rrdstore.stopUpdate();   -> macStore.stopUpdate();
+
+Notes:
+  - Same proxmoxRRDChart + UpdateStore + date-model pattern as the stock
+    CPU/Memory charts, so bars, tooltips and the timeframe selector behave
+    natively.
+  - multiField is required for object-valued rows: InfoWidget only calls
+    updateValue for valueField/textField/multiField rows.
+  - Insertion is whitespace-tolerant, appends to the end of the Summary items
+    array, and is idempotent (blocks are rebuilt from markers on re-run).
+
+Exact insertion logic: src/patch-mac-frontend.py

@@ -1,0 +1,9 @@
+# Local-only material, never published.
+.DS_Store
+__pycache__/
+*.pyc
+
+# Reference material kept in the working tree for comparison only.
+proxmox-summary-enhancement/
+proxmox_files/
+patch_pve_summary.sh

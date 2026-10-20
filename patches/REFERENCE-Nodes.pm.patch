@@ -1,0 +1,68 @@
+REFERENCE — Nodes.pm (pve-mac-monitor v2.2.0)
+Files/sections: /usr/share/perl5/PVE/API2/Nodes.pm
+
+1) Status fields — status method, immediately before `return $res;`
+   Anchor: `name => 'status'`, then `$res->{rootfs}`, then the next
+   `return $res;` (whitespace-tolerant, tabs or spaces).
+
+   # >>> pve-mac-monitor BEGIN (v2.2.0, idempotent)
+   eval {
+       my $mac_state_file = '/var/lib/pve-mac-monitor/state.json';
+       if (-f $mac_state_file && -r _) {
+           require JSON;
+           my $mac_raw = PVE::Tools::file_get_contents($mac_state_file);
+           my $mac_data = JSON::decode_json($mac_raw);
+           if (ref($mac_data) eq 'HASH') {
+               $res->{macstats} = $mac_data;
+               $res->{mac} = {
+                   used  => ($mac_data->{current} // 0) + 0,
+                   total => ($mac_data->{limit}   // 32) + 0,
+               };
+               $res->{mac_current} = ($mac_data->{current} // 0) + 0;
+               $res->{mac_limit}   = ($mac_data->{limit}   // 32) + 0;
+           }
+       }
+   };
+   # <<< pve-mac-monitor END
+
+   - `mac` is {used,total}, the same record shape as stock `cpu`/`maxcpu`
+     rows, so the native bar and renderer work unchanged.
+   - `macstats` carries the full state (peaks, timestamps) for the text row.
+   - eval-guarded: missing/corrupt state never breaks the node status API.
+
+2) History endpoint — new register_method, inserted before `netstat`
+   (fallback: end of file). Anchor: `__PACKAGE__->register_method({` +
+   `name => 'netstat'`.
+
+   # >>> pve-mac-monitor history BEGIN (v2.2.0, idempotent)
+   __PACKAGE__->register_method({
+       name => 'mac_history',
+       path => 'mac-history',
+       method => 'GET',
+       permissions => { check => ['perm', '/nodes/{node}', ['Sys.Audit']] },
+       proxyto => 'node',
+       parameters => { ... node,
+                       timeframe (hour|day|week|month|year, default hour),
+                       cf (average|max, default average) ... },
+       returns => { type => "array" },
+       code => sub {
+           my ($param) = @_;
+           my %win = (hour => 3700, day => 90000, week => 700000,
+                      month => 3100000, year => 32000000);
+           my $tf = $param->{timeframe} // 'hour';
+           my $cf = $param->{cf} // 'average';
+           my $cut = time() - ($win{$tf} // $win{hour});
+           # read /var/lib/pve-mac-monitor/history.json uncapped
+           # [{t,v}, ...] -> [{time,mac}, ...]
+           # window by timeframe, consolidate to <=800 points
+           # (average, or max when cf=max, mirroring rrddata)
+       }});
+   # <<< pve-mac-monitor history END
+
+   - Mirrors rrddata behaviour: numerics only, windowed, <=800 points, so the
+     stock proxmoxRRDChart renders it like CPU/Memory/Server Load.
+   - Uncapped read is deliberate: PVE::Tools::file_get_contents caps at 1MB
+     and would silently return [] for long-retention rings.
+   - Sys.Audit matches the node status permission level.
+
+Exact insertion logic: src/patch-mac-backend.py
