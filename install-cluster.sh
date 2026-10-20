@@ -68,7 +68,8 @@ automatically, standalone servers are listed with --nodes.
   --retention HOURS  history retention per node (1..8760, default 24)
   --ref REF          branch/tag/commit of the project to install
   --nodes "a b c"    explicit node list instead of cluster detection
-  --yes, -y          do not ask for confirmation
+  --yes, -y          do not ask for confirmation (needed when run without a
+                     terminal: cron, CI, or 'curl | bash' with stdin closed)
   --no-verify        skip the post-install pvesh check
   --partial          patch the reachable nodes even if some are unreachable
                      (default: abort before changing anything)
@@ -108,6 +109,10 @@ node_pvesh() {
             "root@${node}" "pvesh get $(printf '%q' "$path") --output-format json $*" 2>/dev/null
     fi
 }
+
+# /dev/tty exists as a device node but cannot always be opened (no controlling
+# terminal, e.g. cron or a detached pipeline). Only a real open attempt counts.
+have_tty() { ( exec 3<>/dev/tty ) 2>/dev/null; }
 
 node_is_local() {
     [[ "$1" == "$LOCAL_NODE" || "$1" == "$LOCAL_HOSTNAME" ]]
@@ -225,14 +230,25 @@ echo "options:    ${PASS_ARGS[*]:-<none>}"
 echo
 
 if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
-    if [[ ! -t 0 ]]; then
-        echo "ABORT: non-interactive and no --yes given" >&2
+    # 'curl ... | bash' leaves stdin occupied by the script stream, so a plain
+    # 'read' cannot be answered. Prompt on the controlling terminal when one
+    # exists; otherwise refuse instead of silently patching.
+    answer=""
+    if have_tty; then
+        node_list="$(echo "$NODES" | tr '\n' ' ' | sed 's/ *$//')"
+        printf 'Patch %s node(s) (%s)? [y/N] ' \
+            "$(echo "$NODES" | wc -l | tr -d ' ')" "$node_list" > /dev/tty 2>/dev/null || true
+        IFS= read -r answer < /dev/tty 2>/dev/null || answer=""
+    elif [[ -t 0 ]]; then
+        read -r -p "Patch all listed nodes now? [y/N] " answer
+    else
+        echo "ABORT: no terminal to confirm on and --yes not given." >&2
+        echo "       Re-run with --yes:  ... | bash -s -- --nodes \"pve66 pve88\" --retention 168 --yes" >&2
         exit 2
     fi
-    read -r -p "Patch all listed nodes now? [y/N] " answer
     case "$answer" in
         y|Y|yes|YES) ;;
-        *) echo "aborted"; exit 0 ;;
+        *) echo "aborted (nothing was changed)"; exit 0 ;;
     esac
 fi
 

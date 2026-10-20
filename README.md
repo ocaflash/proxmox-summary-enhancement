@@ -46,14 +46,14 @@ node without the patch shows no MAC rows when you open its Summary.
 
 ```bash
 curl -fsSL .../install-cluster.sh | bash -s -- --check-only
-curl -fsSL .../install-cluster.sh | bash -s -- --retention 168
+curl -fsSL .../install-cluster.sh | bash -s -- --retention 168 -y
 ```
 
 **Two standalone servers (not a cluster)** — list them explicitly; root ssh
 from the node where you run it to the other one is required:
 
 ```bash
-curl -fsSL .../install-cluster.sh | bash -s -- --nodes "pve66 pve77"
+curl -fsSL .../install-cluster.sh | bash -s -- --nodes "pve66 pve77" -y
 ```
 
 or simply run the installer on each server:
@@ -81,6 +81,10 @@ cannot be reached from other members (repair with `pvecm updatecerts`, or
 `ssh-copy-id root@<node>` for standalone servers). For a quick partial rollout
 add `--partial`: reachable nodes are patched and the rest are listed at the end
 with exit code 6.
+
+`install-cluster.sh` asks for confirmation before patching. With a normal
+terminal the prompt appears on `/dev/tty`; when there is no terminal (cron, CI,
+`curl | bash` with stdin closed) it refuses unless `--yes` (`-y`) is given.
 
 After the rollout the script prints one line per node:
 
