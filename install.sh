@@ -139,44 +139,79 @@ need_root() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------- bootstrap: fetch companion files when missing ----------
-fetch() {
-    local rel="$1" dst="$2" url
-    url="https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/${rel}"
+download() {
+    local url="$1" dst="$2" max_time="${3:-120}"
     mkdir -p "$(dirname "$dst")"
     if have curl; then
-        if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$url" -o "$dst"; then
-            echo "download failed: ${url}" >&2
-            return 1
-        fi
+        curl -fsSL --retry 2 --connect-timeout 10 --max-time "$max_time" "$url" -o "$dst" || return 1
     elif have wget; then
-        if ! wget -q --timeout=30 -O "$dst" "$url"; then
-            echo "download failed: ${url}" >&2
-            return 1
-        fi
+        wget -q --timeout="$max_time" -O "$dst" "$url" || return 1
     else
-        echo "need curl or wget to download ${rel}" >&2
+        echo "need curl or wget to download ${url}" >&2
         return 1
     fi
-    if [[ ! -s "$dst" ]]; then
-        echo "downloaded file is empty: ${url}" >&2
+    [[ -s "$dst" ]]
+}
+
+verify_checksums() {
+    local dir="$1"
+    if [[ ! -s "${dir}/SHA256SUMS" ]] || ! have sha256sum; then
+        echo "WARN: SHA256SUMS not verified (missing file or sha256sum)" >&2
+        return 0
+    fi
+    if (cd "$dir" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1); then
+        echo "checksums OK"
+        return 0
+    fi
+    return 1
+}
+
+validate_project() {
+    local dir="$1"
+    if ! bash -n "${dir}/pve-mac-monitor.sh"; then
+        echo "ABORT: collector has a syntax error" >&2
         return 1
+    fi
+    if have python3; then
+        if ! python3 -m py_compile "${dir}/src/patch-mac-backend.py" \
+                                     "${dir}/src/patch-mac-frontend.py" >/dev/null 2>&1; then
+            echo "ABORT: patchers have a syntax error" >&2
+            return 1
+        fi
+        rm -rf "${dir}/src/__pycache__"
     fi
     return 0
 }
 
-fetch_optional() {
-    local rel="$1" dst="$2" url
-    url="https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/${rel}"
-    if have curl; then
-        curl -fsSL --retry 1 --connect-timeout 10 --max-time 60 "$url" -o "$dst" 2>/dev/null || return 0
-    elif have wget; then
-        wget -q --timeout=30 -O "$dst" "$url" 2>/dev/null || return 0
-    else
-        return 0
+# Preferred: one tarball for the whole ref. Single artifact means every file
+# comes from the same commit, so a stale CDN copy can never mix versions.
+fetch_tarball() {
+    local dir="$1" tgz="${1}.tar.gz"
+    local url="https://codeload.github.com/${REPO_SLUG}/tar.gz/${REPO_REF}"
+    download "$url" "$tgz" 180 || return 1
+    if ! tar -xzf "$tgz" -C "$dir" --strip-components=1 2>/dev/null; then
+        return 1
     fi
-    # Only trust a file that actually looks like sha256 output.
-    if [[ ! -s "$dst" ]] || ! grep -qE '^[0-9a-f]{64} ' "$dst" 2>/dev/null; then
-        rm -f "$dst"
+    rm -f "$tgz"
+    [[ -f "${dir}/pve-mac-monitor.sh" && -f "${dir}/src/patch-mac-backend.py" ]]
+}
+
+# Fallback: per-file download from raw.githubusercontent.
+fetch_files() {
+    local dir="$1" rel
+    for rel in "${PROJECT_FILES[@]}"; do
+        download "https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/${rel}" \
+                 "${dir}/${rel}" 120 || {
+            echo "download failed: ${rel}" >&2
+            return 1
+        }
+        echo "ok ${rel}"
+    done
+    # SHA256SUMS is optional: an older tag may not ship it.
+    download "https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/SHA256SUMS" \
+             "${dir}/SHA256SUMS" 60 || rm -f "${dir}/SHA256SUMS"
+    if [[ -s "${dir}/SHA256SUMS" ]] && ! grep -qE '^[0-9a-f]{64} ' "${dir}/SHA256SUMS"; then
+        rm -f "${dir}/SHA256SUMS"
     fi
     return 0
 }
@@ -184,36 +219,35 @@ fetch_optional() {
 bootstrap_project() {
     WORK_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/pve-mac-monitor.XXXXXX")"
     echo "-- downloading project files from ${REPO_SLUG}@${REPO_REF} --"
-    local rel
-    for rel in "${PROJECT_FILES[@]}"; do
-        fetch "$rel" "${WORK_DIR}/${rel}" || {
-            echo "ABORT: cannot download ${rel}; clone the repo and run ./install.sh" >&2
-            exit 4
-        }
-        echo "ok ${rel}"
-    done
 
-    fetch_optional "SHA256SUMS" "${WORK_DIR}/SHA256SUMS"
-    if [[ -s "${WORK_DIR}/SHA256SUMS" ]] && have sha256sum; then
-        if (cd "$WORK_DIR" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1); then
-            echo "checksums OK"
+    if fetch_tarball "$WORK_DIR"; then
+        echo "downloaded repository archive"
+    else
+        echo "archive download failed, falling back to individual files" >&2
+        if ! fetch_files "$WORK_DIR"; then
+            echo "ABORT: cannot download project files." >&2
+            echo "       Clone https://github.com/${REPO_SLUG} and run ./install.sh there." >&2
+            exit 4
+        fi
+    fi
+
+    if ! verify_checksums "$WORK_DIR"; then
+        # A just-published ref can be served stale by the CDN for a few
+        # seconds; retry once from scratch before giving up.
+        echo "checksum mismatch, retrying download once" >&2
+        rm -rf "${WORK_DIR:?}/"* 
+        if fetch_tarball "$WORK_DIR" || fetch_files "$WORK_DIR"; then
+            verify_checksums "$WORK_DIR" || {
+                echo "ABORT: downloaded files do not match SHA256SUMS" >&2
+                exit 4
+            }
         else
-            echo "ABORT: downloaded files do not match SHA256SUMS" >&2
+            echo "ABORT: retry failed" >&2
             exit 4
         fi
     fi
 
-    if ! bash -n "${WORK_DIR}/pve-mac-monitor.sh"; then
-        echo "ABORT: downloaded collector has a syntax error" >&2
-        exit 4
-    fi
-    if have python3; then
-        if ! python3 -m py_compile "${WORK_DIR}/src/patch-mac-backend.py" \
-                                     "${WORK_DIR}/src/patch-mac-frontend.py"; then
-            echo "ABORT: downloaded patchers have a syntax error" >&2
-            exit 4
-        fi
-    fi
+    validate_project "$WORK_DIR" || exit 4
     REPO_DIR="$WORK_DIR"
 }
 
