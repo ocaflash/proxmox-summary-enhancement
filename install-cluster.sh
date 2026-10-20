@@ -145,15 +145,40 @@ detect_nodes() {
         printf '%s\n' $NODE_LIST
         return
     fi
+
+    # In a cluster, /etc/pve/nodes keeps the directory of every node that was
+    # EVER joined, including ones removed with 'pvecm delnode'. Membership from
+    # pvecm is the only list of nodes that still exist.
+    if cluster_present; then
+        members="$(pvecm nodes 2>/dev/null \
+                    | awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]/ { print $3 }' \
+                    | sed 's/[()]//g')"
+        if [[ -n "$members" ]]; then
+            echo "$members"
+            return
+        fi
+    fi
+
     if [[ -d /etc/pve/nodes ]]; then
         ls -1 /etc/pve/nodes 2>/dev/null
         return
     fi
-    if command -v pvecm >/dev/null 2>&1; then
-        pvecm nodes 2>/dev/null | awk 'NR > 1 && NF >= 3 { print $3 }'
-        return
-    fi
     printf '%s\n' "$LOCAL_NODE"
+}
+
+# /etc/pve/nodes entries that are not cluster members any more.
+stale_node_dirs() {
+    local member found
+    [[ -d /etc/pve/nodes ]] || return 0
+    for dir in /etc/pve/nodes/*; do
+        [[ -d "$dir" ]] || continue
+        [[ "$(basename "$dir")" == "localhost" ]] && continue
+        member=0
+        for n in $NODES; do
+            if [[ "$(basename "$dir")" == "$n" ]]; then member=1; break; fi
+        done
+        if [[ "$member" -eq 0 ]]; then echo "$(basename "$dir")"; fi
+    done
 }
 
 NODES="$(detect_nodes | awk 'NF' | sort -u)"
@@ -190,6 +215,12 @@ fi
 echo "== pve-mac-monitor cluster install =="
 echo "local node: ${LOCAL_NODE}"
 echo "nodes:      $(echo "$NODES" | tr '\n' ' ')"
+STALE="$(stale_node_dirs | tr '\n' ' ')"
+if [[ -n "${STALE// /}" ]]; then
+    echo "ignoring /etc/pve/nodes leftovers: ${STALE% }"
+    echo "  (removed from the cluster but their directory is still there;"
+    echo "   delete with: rm -rf /etc/pve/nodes/<name>  after checking 'pvecm nodes')"
+fi
 echo "installer:  ${REPO_SLUG}@${REPO_REF}"
 echo "options:    ${PASS_ARGS[*]:-<none>}"
 echo
