@@ -180,11 +180,15 @@ detect_nodes() {
 
 # /etc/pve/nodes entries that are not cluster members any more.
 stale_node_dirs() {
-    local member found
+    local member
     [[ -d /etc/pve/nodes ]] || return 0
     for dir in /etc/pve/nodes/*; do
         [[ -d "$dir" ]] || continue
+        # The local node and the GUI's 'localhost' entry are never "leftovers",
+        # even when --nodes lists only remote hosts.
         [[ "$(basename "$dir")" == "localhost" ]] && continue
+        [[ "$(basename "$dir")" == "$LOCAL_NODE" ]] && continue
+        [[ "$(basename "$dir")" == "$LOCAL_HOSTNAME" ]] && continue
         member=0
         for n in $NODES; do
             if [[ "$(basename "$dir")" == "$n" ]]; then member=1; break; fi
@@ -248,6 +252,16 @@ if [[ -n "${STALE// /}" ]]; then
 fi
 echo "installer:  ${REPO_SLUG}@${REPO_REF}"
 echo "options:    ${PASS_ARGS[*]:-<none>}"
+
+LOCAL_IN_LIST=0
+for n in $NODES; do
+    if node_is_local "$n"; then LOCAL_IN_LIST=1; break; fi
+done
+if [[ "$LOCAL_IN_LIST" -eq 0 ]]; then
+    echo
+    echo "NOTE: ${LOCAL_NODE} (this node) is NOT in the list, so it will not be patched."
+    echo "      Add it if you want both servers:  --nodes \"${LOCAL_NODE} ${NODES%% *}\""
+fi
 echo
 
 if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
