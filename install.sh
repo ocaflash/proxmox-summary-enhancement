@@ -7,15 +7,54 @@
 #   curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancement/main/install.sh | bash
 #   # or: wget -qO- .../install.sh | bash
 #
+# The download source is configurable (see MAC_PROVIDER / MAC_REPO / MAC_HOST
+# below), so the same script works when the project is hosted on GitLab.
+#
 # Version-guarded, backup-first, idempotent. Re-run it after any pve-manager
 # update (package upgrades overwrite the patched files).
 #
 # Usage: install.sh [--check-only] [--force] [--retention HOURS] [--ref REF]
 set -euo pipefail
 
-# MAC_REPO=<owner>/<repo> overrides the download source (forks).
+# ---- repository source -------------------------------------------------
+# Switch hosting with MAC_PROVIDER (github|gitlab) and MAC_REPO=<owner>/<repo>.
+# For self-managed GitLab also set MAC_HOST (e.g. gitlab.example.com).
+REPO_PROVIDER="${MAC_PROVIDER:-github}"
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
+case "$REPO_PROVIDER" in
+    github) REPO_HOST="${MAC_HOST:-github.com}" ;;
+    gitlab) REPO_HOST="${MAC_HOST:-gitlab.com}" ;;
+    *)
+        echo "unsupported MAC_PROVIDER='${REPO_PROVIDER}' (use github or gitlab)" >&2
+        exit 2
+        ;;
+esac
+
+# Raw file URL for a path inside the repo.
+repo_raw_url() {
+    case "$REPO_PROVIDER" in
+        github) printf 'https://raw.githubusercontent.com/%s/%s/%s' \
+                        "$REPO_SLUG" "$REPO_REF" "$1" ;;
+        gitlab) printf 'https://%s/%s/-/raw/%s/%s' \
+                        "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1" ;;
+    esac
+}
+
+# Whole-repository archive URL (one artifact, consistent commit).
+repo_archive_url() {
+    case "$REPO_PROVIDER" in
+        github) printf 'https://codeload.github.com/%s/tar.gz/%s' \
+                        "$REPO_SLUG" "$REPO_REF" ;;
+        gitlab) printf 'https://%s/api/v4/projects/%s/repository/archive.tar.gz?sha=%s' \
+                        "$REPO_HOST" "${REPO_SLUG//\//%2F}" "$REPO_REF" ;;
+    esac
+}
+
+# Human-readable project URL (messages only).
+repo_web_url() {
+    printf 'https://%s/%s' "$REPO_HOST" "$REPO_SLUG"
+}
 
 BACKUP_ROOT="/var/backups/pve-mac-monitor"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -94,7 +133,21 @@ Run it from the repo (./install.sh) or straight from the network:
   curl -fsSL .../install.sh | bash -s -- --check-only
 
 When the companion files are not next to this script they are downloaded from
-ocaflash/proxmox-summary-enhancement into a temporary directory.
+the project repository into a temporary directory. Source selection:
+
+  MAC_PROVIDER=github|gitlab   hosting (default github)
+  MAC_REPO=<owner>/<repo>      repository (default
+                               ocaflash/proxmox-summary-enhancement)
+  MAC_HOST=<host>              self-managed GitLab host, e.g. gitlab.local
+  MAC_REF=<ref>                branch/tag/commit (same as --ref)
+
+GitLab example (variables go to bash, not to curl):
+
+  curl -fsSL https://gitlab.com/infra/pve-mac-monitor/-/raw/main/install.sh \
+    | MAC_PROVIDER=gitlab MAC_REPO=infra/pve-mac-monitor bash
+
+or set the defaults once in the script (see the repository source block at the
+top of this file), then the URL above is all a user needs.
 
   --check-only       print patch state and planned actions, change nothing
   --force            bypass the pve-manager version guard
@@ -188,7 +241,8 @@ validate_project() {
 # comes from the same commit, so a stale CDN copy can never mix versions.
 fetch_tarball() {
     local dir="$1" tgz="${1}.tar.gz"
-    local url="https://codeload.github.com/${REPO_SLUG}/tar.gz/${REPO_REF}"
+    local url
+    url="$(repo_archive_url)"
     download "$url" "$tgz" 180 || return 1
     if ! tar -xzf "$tgz" -C "$dir" --strip-components=1 2>/dev/null; then
         return 1
@@ -201,16 +255,15 @@ fetch_tarball() {
 fetch_files() {
     local dir="$1" rel
     for rel in "${PROJECT_FILES[@]}"; do
-        download "https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/${rel}" \
-                 "${dir}/${rel}" 120 || {
+        download "$(repo_raw_url "$rel")" "${dir}/${rel}" 120 || {
             echo "download failed: ${rel}" >&2
             return 1
         }
         echo "ok ${rel}"
     done
     # SHA256SUMS is optional: an older tag may not ship it.
-    download "https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/SHA256SUMS" \
-             "${dir}/SHA256SUMS" 60 || rm -f "${dir}/SHA256SUMS"
+    download "$(repo_raw_url SHA256SUMS)" "${dir}/SHA256SUMS" 60 \
+        || rm -f "${dir}/SHA256SUMS"
     if [[ -s "${dir}/SHA256SUMS" ]] && ! grep -qE '^[0-9a-f]{64} ' "${dir}/SHA256SUMS"; then
         rm -f "${dir}/SHA256SUMS"
     fi
@@ -227,7 +280,7 @@ bootstrap_project() {
         echo "archive download failed, falling back to individual files" >&2
         if ! fetch_files "$WORK_DIR"; then
             echo "ABORT: cannot download project files." >&2
-            echo "       Clone https://github.com/${REPO_SLUG} and run ./install.sh there." >&2
+            echo "       Clone $(repo_web_url) and run ./install.sh there." >&2
             exit 4
         fi
     fi

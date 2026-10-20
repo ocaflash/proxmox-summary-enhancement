@@ -15,9 +15,28 @@
 # --nodes and make sure root ssh to them is possible.
 set -euo pipefail
 
-SCRIPT_VERSION="2.4.0"
+SCRIPT_VERSION="2.5.0"
+# ---- repository source (same contract as install.sh) --------------------
+REPO_PROVIDER="${MAC_PROVIDER:-github}"
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
+case "$REPO_PROVIDER" in
+    github) REPO_HOST="${MAC_HOST:-github.com}" ;;
+    gitlab) REPO_HOST="${MAC_HOST:-gitlab.com}" ;;
+    *)
+        echo "unsupported MAC_PROVIDER='${REPO_PROVIDER}' (use github or gitlab)" >&2
+        exit 2
+        ;;
+esac
+
+repo_raw_url() {
+    case "$REPO_PROVIDER" in
+        github) printf 'https://raw.githubusercontent.com/%s/%s/%s' \
+                        "$REPO_SLUG" "$REPO_REF" "$1" ;;
+        gitlab) printf 'https://%s/%s/-/raw/%s/%s' \
+                        "$REPO_HOST" "$REPO_SLUG" "$REPO_REF" "$1" ;;
+    esac
+}
 # BASH_SOURCE is unset when this script is piped through bash (curl | bash).
 SCRIPT_SRC="${BASH_SOURCE[0]:-}"
 PIPED=0
@@ -235,7 +254,7 @@ if [[ "$PIPED" -eq 0 && -f "${SELF_DIR}/install.sh" ]]; then
     INSTALLER="${SELF_DIR}/install.sh"
 else
     TMP_INSTALLER="$(mktemp "${TMPDIR:-/var/tmp}/pve-mac-install.XXXXXX")"
-    URL="https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install.sh"
+    URL="$(repo_raw_url install.sh)"
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 "$URL" -o "$TMP_INSTALLER"
     elif command -v wget >/dev/null 2>&1; then
@@ -258,7 +277,7 @@ if [[ -n "${STALE// /}" ]]; then
     echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
     echo "  (their directories stay untouched; nothing is changed outside this install)"
 fi
-echo "installer:  ${REPO_SLUG}@${REPO_REF}"
+echo "installer:  ${REPO_SLUG}@${REPO_REF} (${REPO_PROVIDER})"
 echo "options:    ${PASS_ARGS[*]:-<none>}"
 
 LOCAL_IN_LIST=0
@@ -285,7 +304,7 @@ if [[ "$ASSUME_YES" -eq 0 && "$CHECK_ONLY" -eq 0 ]]; then
         echo "ABORT: confirmation needs an interactive shell, and stdin is not a terminal." >&2
         echo "       About to patch ${node_count} node(s) as $(id -un): ${node_list}" >&2
         echo "       Re-run with --yes to confirm:" >&2
-        echo "         curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install-cluster.sh \\" >&2
+        echo "         curl -fsSL $(repo_raw_url install-cluster.sh) \\" >&2
         echo "           | bash -s -- --nodes \"${node_list}\" --yes" >&2
         exit 2
     fi
@@ -348,7 +367,7 @@ if ((${#UNREACHABLE[@]})); then
         echo "Workarounds:" >&2
         echo "  - patch the reachable nodes only:  ... --partial" >&2
         echo "  - or run the installer on each server's own shell (Node -> Shell):" >&2
-        echo "      curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install.sh | bash" >&2
+        echo "      curl -fsSL $(repo_raw_url install.sh) | bash" >&2
         exit 3
     fi
     echo "WARN: --partial, skipping unreachable nodes: ${UNREACHABLE[*]}" >&2
@@ -389,13 +408,22 @@ for node in $NODES; do
     NODE_INDEX=$((NODE_INDEX + 1))
     echo "---- [${NODE_INDEX}/${NODE_TOTAL}] ${node} ----"
     if node_is_local "$node"; then
-        if ! MAC_REF="$REPO_REF" bash "$INSTALLER" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"; then
+        if ! MAC_PROVIDER="$REPO_PROVIDER" MAC_REPO="$REPO_SLUG" MAC_HOST="$REPO_HOST" \
+             MAC_REF="$REPO_REF" \
+             bash "$INSTALLER" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"; then
             FAILED+=("$node")
         fi
     else
         # Stream the installer over ssh: no shared filesystem needed, and each
         # node fetches the project archive itself.
-        remote_cmd="MAC_REF=$(printf '%q' "$REPO_REF") bash -s --"
+        # Pass the resolved source explicitly: the node must download from the
+        # same hosting even when this run got the values from the environment
+        # instead of the script defaults.
+        remote_cmd="MAC_PROVIDER=$(printf '%q' "$REPO_PROVIDER")"
+        remote_cmd+=" MAC_REPO=$(printf '%q' "$REPO_SLUG")"
+        remote_cmd+=" MAC_HOST=$(printf '%q' "$REPO_HOST")"
+        remote_cmd+=" MAC_REF=$(printf '%q' "$REPO_REF")"
+        remote_cmd+=" bash -s --"
         for arg in ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}; do
             remote_cmd+=" $(printf '%q' "$arg")"
         done
@@ -449,7 +477,7 @@ if ((${#UNREACHABLE[@]})); then
         echo "  ${node}: $(ssh_error_get "$node")" >&2
     done
     echo "Run the installer on those nodes directly:" >&2
-    echo "  curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/install.sh | bash" >&2
+    echo "  curl -fsSL $(repo_raw_url install.sh) | bash" >&2
     echo
 fi
 

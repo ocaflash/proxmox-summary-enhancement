@@ -28,7 +28,7 @@ END = "# <<< pve-mac-monitor END"
 HIST_BEGIN = "# >>> pve-mac-monitor history BEGIN"
 HIST_END = "# <<< pve-mac-monitor history END"
 
-BLOCK = """# >>> pve-mac-monitor BEGIN (v2.4.1, idempotent)
+BLOCK = """# >>> pve-mac-monitor BEGIN (v2.5.0, idempotent)
 # Publish Hetzner MAC-limit state to the Node Summary StatusView.
 # eval-guarded: a missing or corrupt state file never breaks the API.
 eval {
@@ -50,7 +50,7 @@ eval {
 };
 # <<< pve-mac-monitor END"""
 
-HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.4.1, idempotent)
+HISTORY_BLOCK = """# >>> pve-mac-monitor history BEGIN (v2.5.0, idempotent)
 __PACKAGE__->register_method({
     name => 'mac_history',
     path => 'mac-history',

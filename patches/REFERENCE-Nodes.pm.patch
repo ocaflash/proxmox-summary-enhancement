@@ -1,11 +1,11 @@
-REFERENCE — Nodes.pm (pve-mac-monitor v2.3.0)
+REFERENCE — Nodes.pm (pve-mac-monitor v2.5.0)
 Files/sections: /usr/share/perl5/PVE/API2/Nodes.pm
 
 1) Status fields — status method, immediately before `return $res;`
    Anchor: `name => 'status'`, then `$res->{rootfs}`, then the next
    `return $res;` (whitespace-tolerant, tabs or spaces).
 
-   # >>> pve-mac-monitor BEGIN (v2.3.0, idempotent)
+   # >>> pve-mac-monitor BEGIN (v2.5.0, idempotent)
    eval {
        my $mac_state_file = '/var/lib/pve-mac-monitor/state.json';
        if (-f $mac_state_file && -r _) {
@@ -34,7 +34,7 @@ Files/sections: /usr/share/perl5/PVE/API2/Nodes.pm
    (fallback: end of file). Anchor: `__PACKAGE__->register_method({` +
    `name => 'netstat'`.
 
-   # >>> pve-mac-monitor history BEGIN (v2.3.0, idempotent)
+   # >>> pve-mac-monitor history BEGIN (v2.5.0, idempotent)
    __PACKAGE__->register_method({
        name => 'mac_history',
        path => 'mac-history',
@@ -50,12 +50,13 @@ Files/sections: /usr/share/perl5/PVE/API2/Nodes.pm
            my %win = (hour => 3700, day => 90000, week => 700000,
                       month => 3100000, year => 32000000);
            my $tf = $param->{timeframe} // 'hour';
-           my $cf = $param->{cf} // 'average';
+           # one series: cf decides between bucket average and bucket maximum
+           my $cf = ($param->{cf} // 'AVERAGE') =~ /^max$/i ? 'max' : 'average';
            my $cut = time() - ($win{$tf} // $win{hour});
            # read /var/lib/pve-mac-monitor/history.json uncapped
            # [{t,v}, ...] -> [{time,mac}, ...]
            # window by timeframe, consolidate to <=800 points
-           # (average, or max when cf=max, mirroring rrddata)
+           # (average, or max when cf=MAX, mirroring rrddata)
        }});
    # <<< pve-mac-monitor history END
 

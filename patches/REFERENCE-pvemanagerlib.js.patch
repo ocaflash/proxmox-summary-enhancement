@@ -1,4 +1,4 @@
-REFERENCE — pvemanagerlib.js (pve-mac-monitor v2.3.0)
+REFERENCE — pvemanagerlib.js (pve-mac-monitor v2.5.0)
 File: /usr/share/pve-manager/js/pvemanagerlib.js
 
 A) Ext.define('PVE.node.StatusView')
@@ -85,7 +85,7 @@ B) Ext.define('PVE.node.Summary')
       {
           title: gettext('MAC addresses (used)'),
           xtype: 'proxmoxRRDChart',
-          fields: ['mac'],
+          fields: ['mac'],            // single series; cf picks average or max
           fieldTitles: [gettext('MACs')],
           store: macStore,
       },
