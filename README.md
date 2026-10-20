@@ -16,10 +16,16 @@ Tested anchors: PVE 8.x / 9.x (`pve-manager`, `proxmox-widget-toolkit`). Any
 
 ## Install
 
-One command, no clone needed (downloads the rest of the files itself):
+One command, no clone needed. `install.sh` downloads the rest of the project
+itself (single repository archive, SHA256SUMS verified):
 
 ```bash
+# as root on the PVE host
 curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancement/main/install.sh | bash
+
+# with options (e.g. 7 days of history)
+curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancement/main/install.sh \
+  | bash -s -- --retention 168
 ```
 
 Dry run first (read-only, works as a normal user):
@@ -41,6 +47,18 @@ cd proxmox-summary-enhancement
 
 Options: `--check-only`, `--force` (skip the version guard), `--retention HOURS`
 (1..8760, default 24), `--ref REF` (branch/tag/commit to download).
+
+`install.sh` works in two modes:
+
+- **standalone** (`curl ... | bash`, or the file copied alone to a host): the
+  missing companion files are downloaded from `codeload.github.com` as one
+  archive, so all files come from the same commit; `SHA256SUMS` is verified
+  and a mismatch aborts the install.
+- **checkout** (`./install.sh` next to `src/` and `pve-mac-monitor.sh`): uses
+  the local files, no network access needed.
+
+`MAC_REPO=<owner>/<repo>` points the download at a fork; `MAC_REF=<ref>` does
+the same as `--ref`.
 
 ## Requirements
 
