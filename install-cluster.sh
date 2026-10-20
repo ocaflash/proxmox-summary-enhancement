@@ -15,6 +15,7 @@
 # --nodes and make sure root ssh to them is possible.
 set -euo pipefail
 
+SCRIPT_VERSION="2.4.0"
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
 REPO_REF="${MAC_REF:-main}"
 # BASH_SOURCE is unset when this script is piped through bash (curl | bash).
@@ -114,10 +115,11 @@ node_pvesh() {
     fi
 }
 
-# Node names end up in a prompt on a terminal. A directory name in
-# /etc/pve/nodes is root-controlled but can still contain escape sequences
-# (OSC 52 clipboard writes, title changes), so print only safe characters.
-sanitize() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._-'; }
+# Node names are printed and used as ssh targets. Only names made of
+# [A-Za-z0-9._-] are accepted; anything else is dropped instead of being
+# stripped, so a crafted entry cannot turn into a different, valid-looking
+# name. (Names go to a terminal, and escape sequences are not printed.)
+valid_node_name() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 
 node_is_local() {
     [[ "$1" == "$LOCAL_NODE" || "$1" == "$LOCAL_HOSTNAME" ]]
@@ -191,7 +193,18 @@ stale_node_dirs() {
     done
 }
 
-NODES="$(detect_nodes | awk 'NF' | sort -u | tr -cd 'A-Za-z0-9._\n-')"
+RAW_NODES="$(detect_nodes | awk 'NF')"
+NODES=""
+DROPPED_NODES=0
+while IFS= read -r n; do
+    [[ -z "$n" ]] && continue
+    if valid_node_name "$n"; then
+        NODES="${NODES}${n}"$'\n'
+    else
+        DROPPED_NODES=$((DROPPED_NODES + 1))
+    fi
+done <<<"$RAW_NODES"
+NODES="$(printf '%s' "$NODES" | awk 'NF' | sort -u)"
 if [[ -z "$NODES" ]]; then
     echo "ABORT: no nodes detected (not a cluster and pvecm unavailable?)" >&2
     echo "       Pass --nodes \"node1 node2\"" >&2
@@ -222,10 +235,13 @@ else
     INSTALLER="$TMP_INSTALLER"
 fi
 
-echo "== pve-mac-monitor cluster install =="
+echo "== pve-mac-monitor cluster install (script ${SCRIPT_VERSION}) =="
 echo "local node: ${LOCAL_NODE}"
 echo "nodes:      $(echo "$NODES" | tr '\n' ' ')"
-STALE="$(stale_node_dirs | tr '\n' ' ' | tr -cd 'A-Za-z0-9._ -')"
+STALE="$(stale_node_dirs | while IFS= read -r d; do valid_node_name "$d" && echo "$d"; done | tr '\n' ' ')"
+if [[ "$DROPPED_NODES" -gt 0 ]]; then
+    echo "WARN: ignored ${DROPPED_NODES} node entr(y/ies) with unusual characters" >&2
+fi
 if [[ -n "${STALE// /}" ]]; then
     echo "skipped /etc/pve/nodes entries that are not cluster members: ${STALE% }"
     echo "  (their directories stay untouched; nothing is changed outside this install)"
