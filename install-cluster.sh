@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-cluster.sh — run install.sh on every node of the PVE cluster.
+# install-cluster.sh — run install.sh on every node, clustered or standalone.
 #
 # The monitor is per-node by design: the MAC count comes from the local bridge
 # FDB, each Hetzner server has its own 32-MAC limit, and the Node Summary API
@@ -10,7 +10,9 @@
 # Usage: ./install-cluster.sh [--check-only] [--force] [--retention HOURS]
 #                             [--ref REF] [--nodes "n1 n2"] [--yes] [--no-verify]
 #
-# Requires root ssh access between nodes (Proxmox sets this up in a cluster).
+# Node discovery: --nodes, else /etc/pve/nodes (cluster), else pvecm, else the
+# local host. Standalone servers (no cluster) work too: list them with
+# --nodes and make sure root ssh to them is possible.
 set -euo pipefail
 
 REPO_SLUG="${MAC_REPO:-ocaflash/proxmox-summary-enhancement}"
@@ -86,6 +88,33 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 LOCAL_NODE="$(pvecm nodename 2>/dev/null || hostname -s)"
+LOCAL_HOSTNAME="$(hostname -s)"
+
+# Run a pvesh query on a node: locally for this host, over ssh otherwise.
+# Works for clustered nodes AND for standalone servers listed with --nodes
+# (in a cluster the local pvesh could proxy, but ssh works in both setups).
+node_pvesh() {
+    local node="$1" path="$2"
+    shift 2
+    if [[ "$node" == "$LOCAL_NODE" || "$node" == "$LOCAL_HOSTNAME" ]]; then
+        pvesh get "$path" --output-format json "$@" 2>/dev/null
+    else
+        ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+            "root@${node}" "pvesh get $(printf '%q' "$path") --output-format json $*" 2>/dev/null
+    fi
+}
+
+node_is_local() {
+    [[ "$1" == "$LOCAL_NODE" || "$1" == "$LOCAL_HOSTNAME" ]]
+}
+
+# Standalone PVE also ships pvecm, but 'pvecm status' then prints an error.
+# A cluster only exists when corosync.conf is present.
+cluster_present() {
+    [[ -f /etc/pve/corosync.conf ]] && return 0
+    pvecm status 2>/dev/null | grep -q '^Cluster information' && return 0
+    return 1
+}
 
 detect_nodes() {
     if [[ -n "$NODE_LIST" ]]; then
@@ -157,8 +186,8 @@ fi
 echo "== pre-flight =="
 UNREACHABLE=()
 for node in $NODES; do
-    if [[ "$node" == "$LOCAL_NODE" ]]; then
-        printf '%-16s local\n' "$node"
+    if node_is_local "$node"; then
+        printf '%-16s local (%s)\n' "$node" "$(pveversion 2>/dev/null | head -n1)"
         continue
     fi
     remote_ver="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
@@ -179,20 +208,22 @@ fi
 
 # A degraded cluster is not a reason to refuse, but restarting services on a
 # node that has lost quorum should be a conscious decision.
-if command -v pvecm >/dev/null 2>&1; then
+if cluster_present; then
     if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
         echo "cluster: quorate"
     else
         echo "WARN: cluster is not quorate; patching one node is still safe (no" >&2
         echo "      cluster config is touched), but check 'pvecm status' first." >&2
     fi
+else
+    echo "cluster: none detected (standalone node(s), ssh-based rollout)"
 fi
 echo
 
 FAILED=()
 for node in $NODES; do
     echo "---- ${node} ----"
-    if [[ "$node" == "$LOCAL_NODE" ]]; then
+    if node_is_local "$node"; then
         if ! MAC_REF="$REPO_REF" bash "$INSTALLER" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"; then
             FAILED+=("$node")
         fi
@@ -212,17 +243,24 @@ for node in $NODES; do
 done
 
 if [[ "$VERIFY" -eq 1 && "$CHECK_ONLY" -eq 0 ]]; then
-    echo "== verification (mac field per node) =="
+    echo "== verification =="
+    printf '%-16s %-10s %-8s %s\n' NODE MAC API HISTORY
     for node in $NODES; do
-        value="$(pvesh get "/nodes/${node}/status" --output-format json 2>/dev/null \
-                 | tr -d ' \n' | grep -o '"mac":{[^}]*}' | head -n1 || true)"
-        printf '%-16s %s\n' "$node" "${value:-<no mac field>}"
+        status_json="$(node_pvesh "$node" "/nodes/${node}/status" || true)"
+        mac_field="$(tr -d ' \n' <<<"$status_json" | grep -o '"mac":{[^}]*}' | head -n1 || true)"
+        used="$(grep -o '"used":[0-9]*' <<<"$mac_field" | head -n1 | cut -d: -f2)"
+        total="$(grep -o '"total":[0-9]*' <<<"$mac_field" | head -n1 | cut -d: -f2)"
+        hist_json="$(node_pvesh "$node" "/nodes/${node}/mac-history" --timeframe hour --cf AVERAGE || true)"
+        points="$(grep -o '"time"' <<<"$hist_json" | wc -l | tr -d ' ')"
+        printf '%-16s %-10s %-8s %s\n' "$node" \
+            "${used:-?}/${total:-?}" "${used:+ok}" "${points} points (last hour)"
     done
     echo
-    echo "Open Node -> Summary for any node and hard-refresh (Ctrl+Shift+R)."
+    echo "Each node reports its own count. Open Node -> Summary and hard-refresh"
+    echo "(Ctrl+Shift+R) once per node."
 fi
 
-if command -v pvecm >/dev/null 2>&1; then
+if cluster_present; then
     echo "== cluster health =="
     if pvecm status 2>/dev/null | grep -q 'Quorate:.*Yes'; then
         echo "quorate: yes"

@@ -35,6 +35,51 @@ curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancemen
   | bash -s -- --check-only
 ```
 
+### Several nodes (two servers, cluster or not)
+
+Both setups need the same thing on **each** node: the collector, its cron
+entry, and both patches. Nothing is shared between nodes, the count is per
+server (Hetzner limits MACs per server), and every node serves the GUI, so a
+node without the patch shows no MAC rows when you open its Summary.
+
+**Clustered** — the script finds the nodes itself:
+
+```bash
+curl -fsSL .../install-cluster.sh | bash -s -- --check-only
+curl -fsSL .../install-cluster.sh | bash -s -- --retention 168
+```
+
+**Two standalone servers (not a cluster)** — list them explicitly; root ssh
+from the node where you run it to the other one is required:
+
+```bash
+curl -fsSL .../install-cluster.sh | bash -s -- --nodes "pve66 pve77"
+```
+
+or simply run the installer on each server:
+
+```bash
+for h in pve66 pve77; do
+  ssh root@$h 'curl -fsSL https://raw.githubusercontent.com/ocaflash/proxmox-summary-enhancement/main/install.sh | bash'
+done
+```
+
+After the rollout the script prints one line per node:
+
+```
+== verification ==
+NODE             MAC        API      HISTORY
+pve66            17/32      ok       61 points (last hour)
+pve77            4/32       ok       61 points (last hour)
+```
+
+`API` empty means the node status response has no `mac` field (patch not
+applied); `0 points` means the history endpoint answered but the window is
+empty (collector was writing zeros or just started). Without a cluster each
+server has its own web UI — open each one and hard-refresh. In a cluster a
+single UI shows every node, and each node's Summary shows that node's own
+count.
+
 ### Several nodes (cluster)
 
 The monitor is per-node: the MAC count comes from the local bridge FDB, every
